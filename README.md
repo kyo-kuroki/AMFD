@@ -1,4 +1,4 @@
-# QUBO Machine
+# AMFD for QUBO
 
 ## 概要
 
