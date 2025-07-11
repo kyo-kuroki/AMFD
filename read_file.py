@@ -12,11 +12,8 @@ class QAP:
         with open(filepath, 'r') as f:
             lines = f.readlines()
 
-        # =====================
-        # 1. 都市数を取得（最初の非空行から）
-        # =====================
         for line in lines:
-            if line.strip():  # 空行でない
+            if line.strip():  
                 numbers = [int(s) for s in re.findall(r'-?\d+', line)]
                 if not numbers:
                     continue
@@ -25,31 +22,24 @@ class QAP:
                 break
 
         n = self.city_num
-        line_idx = lines.index(line) + 1  # 次の行からマトリクスを読む
+        line_idx = lines.index(line) + 1  
 
-        # 空行をスキップ
         while line_idx < len(lines) and not lines[line_idx].strip():
             line_idx += 1
 
-        # =====================
-        # 2. 流量行列Fを読み取り
-        # =====================
         F_data = []
         while line_idx < len(lines):
             line = lines[line_idx].strip()
-            if not line:  # 空行が来たら終了
+            if not line: 
                 line_idx += 1
                 break
             F_data.extend([int(x) for x in line.split()])
             line_idx += 1
 
         if len(F_data) != n * n:
-            raise ValueError(f"流量行列のサイズが不正です（{len(F_data)} 要素, 期待値: {n*n}）")
+            raise ValueError(f"flow matrix shape is wrong")
         self.Fij = np.array(F_data, dtype=int).reshape((n, n))
 
-        # =====================
-        # 3. 距離行列Dを読み取り
-        # =====================
         D_data = []
         while line_idx < len(lines):
             line = lines[line_idx].strip()
@@ -60,7 +50,7 @@ class QAP:
             line_idx += 1
 
         if len(D_data) != n * n:
-            raise ValueError(f"距離行列のサイズが不正です（{len(D_data)} 要素, 期待値: {n*n}）")
+            raise ValueError(f"distance matrix shape is wrong")
         self.Dij = np.array(D_data, dtype=int).reshape((n, n))
         return self.Fij, self.Dij
     
@@ -83,10 +73,9 @@ class TSP:
             if line in ('NODE_COORD_SECTION', 'EDGE_WEIGHT_SECTION'):
                 break
             if line == 'DISPLAY_DATA_SECTION':
-                # DISPLAY_DATA_SECTION は無視して EOF までスキップ
                 while i < len(lines) and 'EOF' not in lines[i]:
                     i += 1
-                return None  # または continue, raise, pass など適宜処理
+                return None  
             if ':' in line:
                 key, value = line.split(':', 1)
             elif line:
