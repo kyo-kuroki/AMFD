@@ -9,8 +9,19 @@ QUBOマシンは、様々な組合せ最適化問題の近似解を高速に求�
 .
 ├── generator.py     # 典型問題のQUBO定式化を行う関数群
 ├── mediator.py      # QUBO定式化された関数をQUBO行列に変換 / 解の再構成
-├── optimizer.py     # AMFD（Approximate Minimization via Fast Descent）最適化アルゴリズム
-├── example.ipynb    # 上記モジュールの使用例を示すチュートリアルノートブック
+├── read_file.py     # AMFD（Approximate Minimization via Fast Descent）最適化アルゴリズム
+├── datasets
+        ├── gcp
+        ├── mcp
+        ├── misp
+        ├── qap
+        └── tsp
+├── amfd 
+        ├── main.py
+        └── optimizer.py
+├── gurobi
+        ├── main.py
+        └── gurobi_optimizer.py
 └── README.md        # 本ファイル
 ```
 
