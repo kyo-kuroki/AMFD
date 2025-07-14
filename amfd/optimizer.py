@@ -12,8 +12,9 @@ import contextlib
 
 
 
-def squared_norm_and_diag_hessians(f: Callable, *inputs: torch.Tensor, m: int = 128):
-    inputs = [torch.zeros_like(x, requires_grad=True) for x in inputs]
+def squared_norm_and_diag_hessians(f: Callable, arg_shapes: List[torch.Size], m: int = 128, device='cuda', generate_function=None):
+    inputs = [torch.zeros(shape, requires_grad=True, device=device) for shape in arg_shapes]
+    split_sizes = [x.numel() for x in inputs]
 
     # Forward and 1st-order gradients
     output = f(*inputs)
@@ -51,22 +52,32 @@ def squared_norm_and_diag_hessians(f: Callable, *inputs: torch.Tensor, m: int = 
 
         diag_hessians.append(diag.view_as(x))
 
-
     # compute Hessian
     try:
-        Q_squared_norm = ((hessian(f)(*inputs))**2).sum()
-    except Exception as e:
-        print(f"Direct computing Hessian was failed: {e}. Computing row-wise.")
-        h = torch.cat([g.reshape(-1) for g in grads])
-        def row_hesse(h_i):
-            grad_i = torch.autograd.grad(h_i, inputs, retain_graph=True)
-            return (torch.cat([g.reshape(-1) for g in grad_i])**2).sum().detach().requires_grad_(False)
-        # Hessianの各行を1個ずつ計算（メモリ効率よい）
-        Q_squared_norm = 0
-        for i in range(h.numel()):
-            Q_squared_norm += row_hesse(h[i])
+        v = torch.cat([(v).reshape(-1) for v in inputs]) 
 
-    h_squared_norm = sum(((grad + 0.5*diag_hessian)**2).sum() - (diag_hessian**2).sum() for grad, diag_hessian in zip(grads, diag_hessians))
+        def flat_f(v_flat):
+            split = torch.split(v_flat, split_sizes)
+            reshaped = [s.view(shape) for s, shape in zip(split, arg_shapes)]
+            return f(*reshaped)
+
+        Q_squared_norm = ((torch.func.hessian(flat_f)(v).detach())**2).sum()
+        h_squared_norm = sum(((grad + 0.5*diag_hessian)**2).sum() - (diag_hessian**2).sum() for grad, diag_hessian in zip(grads, diag_hessians))
+    except Exception as e:
+        try:
+            h, Q = generate_function(device='cpu')
+            h_squared_norm, Q_squared_norm = (h**2).sum().to(device), (Q**2).sum().to(device)
+        except Exception:
+            print(f"Direct computing Hessian was failed: {e}. Computing row-wise.")
+            h = torch.cat([g.reshape(-1) for g in grads])
+            def row_hesse(h_i):
+                grad_i = torch.autograd.grad(h_i, inputs, retain_graph=True)
+                return (torch.cat([g.reshape(-1) for g in grad_i])**2).sum().detach().requires_grad_(False)
+            # Hessianの各行を1個ずつ計算（メモリ効率よい）
+            Q_squared_norm = 0
+            for i in range(h.numel()):
+                Q_squared_norm += row_hesse(h[i])
+            h_squared_norm = sum(((grad + 0.5*diag_hessian)**2).sum() - (diag_hessian**2).sum() for grad, diag_hessian in zip(grads, diag_hessians))
 
     return h_squared_norm + Q_squared_norm, diag_hessians
 
@@ -140,7 +151,7 @@ def auto_grid_amfd(
 
     # Compute coeffs (outside batch)
     if squared_norm is None or diag_hessians is None:
-        squared_norm, diag_hessians = squared_norm_and_diag_hessians(f, *[x[0] for x in after])
+        squared_norm, diag_hessians = squared_norm_and_diag_hessians(f, shapes, device=device)
     coeff = torch.sqrt(total_vars / squared_norm)
 
     # Gradient function
@@ -244,7 +255,7 @@ def auto_amfd(
 
     # 係数の計算
     if squared_norm is None or diag_hessians is None:
-        squared_norm, diag_hessians = squared_norm_and_diag_hessians(f, *[x[0] for x in after])
+        squared_norm, diag_hessians = squared_norm_and_diag_hessians(f, shapes, device=device)
     coeff = torch.sqrt(total_vars / squared_norm)
 
     # 勾配関数

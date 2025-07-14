@@ -1,11 +1,15 @@
 
+import os
+import sys
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.abspath(os.path.join(current_dir, os.pardir))
+sys.path.append(parent_dir)
 import read_file as rf
 import optimizer as op
 import generator as gn
 import torch
 import math
 import time
-import os
 from pathlib import Path
 import pandas as pd
 
@@ -56,36 +60,70 @@ def crossover_parameters(eta_tensor: torch.Tensor, zeta_tensor: torch.Tensor):
 
     return new_eta, new_zeta
 
+def check_double_onehot_constraint(sol):
+    is_valid = torch.allclose(sol.sum(dim=-2), torch.ones_like(sol.sum(dim=-2)), atol=1e-5) and \
+        torch.allclose(sol.sum(dim=-1), torch.ones_like(sol.sum(dim=-1)), atol=1e-5)
+    return is_valid
 
-def eval_tsp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0'):
+# def check_double_onehot_constraint(sol):
+#     row_sum = sol.sum(dim=-2)
+#     col_sum = sol.sum(dim=-1)
+#     row_valid = torch.all(torch.isclose(row_sum, torch.ones_like(row_sum), atol=1e-5), dim=-1)
+#     col_valid = torch.all(torch.isclose(col_sum, torch.ones_like(col_sum), atol=1e-5), dim=-1)
+#     return row_valid & col_valid  # shape: (B,)
+
+# def check_double_onehot_constraint(sol):
+#     row_sum = sol.sum(dim=-2)
+#     col_sum = sol.sum(dim=-1)
+#     row_valid = torch.all(torch.isclose(row_sum, torch.ones_like(row_sum), atol=1e-5), dim=-1)
+#     col_valid = torch.all(torch.isclose(col_sum, torch.ones_like(col_sum), atol=1e-5), dim=-1)
+#     is_valid = row_valid & col_valid  # shape: (B,)
+
+#     if torch.any(is_valid):
+#         first_valid_index = torch.nonzero(is_valid, as_tuple=True)[0][0].item()
+#     else:
+#         first_valid_index = None
+
+#     return torch.any(is_valid), first_valid_index
+
+
+def eval_tsp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
 
     dists = torch.from_numpy(rf.TSP().read_file(instance)).float()
     num_city = dists.shape[0]
 
     # TSPの定式化を呼び出し(coeffは制約係数: defaultは平均最大距離の1倍)
-    tsp_sample = gn.TSP(dists, coeff1=1, coeff2=1, device=device)
+    coeff = 1
+    sample = gn.TSP(dists, coeff1=coeff, coeff2=coeff, device=device)
     shapes = [torch.Size([num_city-1, num_city-1])]
     # pre compile
-    op.pre_compile(tsp_sample.generator, shapes, device=device)
+    op.pre_compile(sample.generator, shapes, device=device)
 
     start_time = time.time()
+    while True:
+        squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
 
-    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(tsp_sample.generator, *[torch.zeros((shape), device=device) for shape in shapes])
+        sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+        tuning_end_time = time.time()
 
-    sols, vals, etas, zetas = op.auto_grid_amfd(tsp_sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(2000,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
-    tuning_end_time = time.time()
+        topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
+        if check_double_onehot_constraint(topk_sols[0][0]):
+            break
+        else: 
+            coeff *= 1.1
+            sample = gn.TSP(dists, coeff1=coeff, coeff2=coeff, device=device)
+            squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
 
-    topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
 
     del sols, vals, etas, zetas # free memory
 
     if genetic:
         # 遺伝的アルゴリズムを使用して最適化
         cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(tsp_sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     else:
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(tsp_sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     end_time = time.time()
 
@@ -96,48 +134,53 @@ def eval_tsp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
 
-    is_valid = torch.allclose(topk_sols[0][0].sum(dim=0), torch.ones_like(topk_sols[0][0].sum(dim=0)), atol=1e-5) and \
-        torch.allclose(topk_sols[0][0].sum(dim=1), torch.ones_like(topk_sols[0][0].sum(dim=1)), atol=1e-5)
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid}
-    is_valid = torch.allclose(best_sol[0][0].sum(dim=0), torch.ones_like(best_sol[0][0].sum(dim=0)), atol=1e-5) and \
-           torch.allclose(best_sol[0][0].sum(dim=1), torch.ones_like(best_sol[0][0].sum(dim=1)), atol=1e-5)
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid}
+    is_valid = check_double_onehot_constraint(topk_sols[0][0])
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
+    is_valid = check_double_onehot_constraint(best_sol[0][0])
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
 
     return tuning_result , tuned_result
 
 
 
 
-def eval_qap(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0'):
+def eval_qap(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
 
     flows, dists = rf.QAP().read_file(instance)
     flows, dists = torch.from_numpy(flows).float(), torch.from_numpy(dists).float()
     num_city = dists.shape[0]
 
     # QAPの定式化を呼び出し
-    sample = gn.QAP(flows, dists, coeff1=1, coeff2=1, device=device)
+    coeff = 1
+    sample = gn.QAP(flows, dists, coeff1=coeff, coeff2=coeff, device=device)
     shapes = [torch.Size([num_city, num_city])]
     # pre compile
     op.pre_compile(sample.generator, shapes, device=device)
 
     start_time = time.time()
+    while True:
+        squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
 
-    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, *[torch.zeros((shape), device=device) for shape in shapes])
+        sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+        tuning_end_time = time.time()
 
-    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(2000,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
-    tuning_end_time = time.time()
-
-    topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
+        topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
+        if check_double_onehot_constraint(topk_sols[0][0]):
+            break
+        else:
+            coeff *= 1.1
+            sample = gn.QAP(flows, dists, coeff1=coeff, coeff2=coeff, device=device)
+            squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
 
     del sols, vals, etas, zetas # free memory
 
     if genetic:
         # 遺伝的アルゴリズムを使用して最適化
         cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     else:
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     end_time = time.time()
 
@@ -148,17 +191,15 @@ def eval_qap(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
 
-    is_valid = torch.allclose(topk_sols[0][0].sum(dim=0), torch.ones_like(topk_sols[0][0].sum(dim=0)), atol=1e-5) and \
-        torch.allclose(topk_sols[0][0].sum(dim=1), torch.ones_like(topk_sols[0][0].sum(dim=1)), atol=1e-5)
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid}
-    is_valid = torch.allclose(best_sol[0][0].sum(dim=0), torch.ones_like(best_sol[0][0].sum(dim=0)), atol=1e-5) and \
-           torch.allclose(best_sol[0][0].sum(dim=1), torch.ones_like(best_sol[0][0].sum(dim=1)), atol=1e-5)
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid}
+    is_valid = check_double_onehot_constraint(topk_sols[0][0])
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
+    is_valid = check_double_onehot_constraint(best_sol[0][0])
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
 
     return tuning_result , tuned_result
 
 
-def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0'):
+def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
 
     graph = torch.from_numpy(rf.MISP().read_file(instance)).float()
     num_nodes = graph.shape[0]
@@ -171,9 +212,9 @@ def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, d
 
     start_time = time.time()
 
-    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, *[torch.zeros((shape), device=device) for shape in shapes])
+    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
 
-    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(2000,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
     tuning_end_time = time.time()
 
     topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
@@ -183,10 +224,10 @@ def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, d
     if genetic:
         # 遺伝的アルゴリズムを使用して最適化
         cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     else:
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     end_time = time.time()
 
@@ -197,13 +238,13 @@ def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, d
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
     is_valid = torch.allclose((topk_sols[0][0] * (topk_sols[0][0] @ graph)).sum(), torch.zeros(1, device=graph.device), atol=1e-5) 
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid}
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':1}
     is_valid = torch.allclose((best_sol[0][0] * (best_sol[0][0] @ graph)).sum(), torch.zeros(1, device=graph.device), atol=1e-5) 
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid}
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':1}
 
     return tuning_result , tuned_result
 
-def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0'):
+def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
 
     graph = torch.from_numpy(rf.MCP().read_file(instance)).float()
     num_nodes = graph.shape[0]
@@ -216,9 +257,9 @@ def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
 
     start_time = time.time()
 
-    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, *[torch.zeros((shape), device=device) for shape in shapes])
+    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
 
-    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(2000,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
     tuning_end_time = time.time()
 
     topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
@@ -228,10 +269,10 @@ def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     if genetic:
         # 遺伝的アルゴリズムを使用して最適化
         cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     else:
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
 
     end_time = time.time()
 
@@ -242,13 +283,13 @@ def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
 
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': True}
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': True, 'constraint coeff':None}
 
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': True}
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': True, 'constraint coeff':None}
 
     return tuning_result , tuned_result
 
-def check_validity(sols, graph):
+def check_gcp_constraint(sols, graph):
     zero = torch.tensor(0.0, device=sols.device)
     graph_expanded = graph.unsqueeze(0)  # shape: [1, N, N]
 
@@ -284,7 +325,7 @@ def check_validity(sols, graph):
         first_valid_index = -1  # または -1 など
     return is_valid, first_valid_index
 
-def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0'):
+def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
 
     graph = torch.from_numpy(rf.GCP().read_file(instance)).float()
     num_nodes = graph.shape[0]
@@ -297,56 +338,55 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
 
     start_time = time.time()
 
-    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, *[torch.zeros((shape), device=device) for shape in shapes])
+    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
+    tuning_is_valid = False
+    while True:
+        sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+        topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
+        is_valid, valid_index = check_gcp_constraint(sols=topk_sols[0], graph=graph)
+        if is_valid:
+            del diag_hessians, squared_norm
+            num_color = int(round((topk_sols[0][valid_index].sum(dim=0) > 1e-3).sum().item(), 5))
+            sample = gn.GCP(graph, coeff1=1, coeff2=1, coeff3=1, num_color=int(num_color-1), device=device)
+            shapes = [torch.Size([num_nodes, sample.num_color]), torch.Size([sample.num_color])]
+            squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
+            tuning_is_valid = True
+        else: break
 
-    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(2000,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
     tuning_end_time = time.time()
-
-    topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
-
-    del sols, vals, etas, zetas # free memory
-
-    is_valid, valid_index = check_validity(sols=topk_sols[0], graph=graph)
-    
-    if is_valid:
-        del diag_hessians, squared_norm
-        num_color = round((topk_sols[0][valid_index].sum(dim=0) > 1e-3).sum().item(),5)
-        sample = gn.GCP(graph, coeff1=1, coeff2=1, coeff3=1, num_color=int(num_color-1), device=device)
-        shapes = [torch.Size([num_nodes, sample.num_color]), torch.Size([sample.num_color])]
-        squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, *[torch.zeros((shape), device=device) for shape in shapes])
 
 
     if genetic:
         # 遺伝的アルゴリズムを使用して最適化
         cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), diag_hessians=diag_hessians, squared_norm=squared_norm, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), diag_hessians=diag_hessians, squared_norm=squared_norm, device=device, show_progress=True)
 
     else:
-        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(2000, step_scale*sum(math.prod(shape) for shape in shapes)), diag_hessians=diag_hessians, squared_norm=squared_norm, device=device, show_progress=True)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), diag_hessians=diag_hessians, squared_norm=squared_norm, device=device, show_progress=True)
 
     end_time = time.time()
 
     # 結果の確認
-    tuning_color = round((topk_sols[0][valid_index].sum(dim=0) > 1e-3).sum().item(),5)
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': tuning_color, 'eta':round(topk_etas[valid_index].item(),5), 'zeta':round(topk_zetas[valid_index].item(),5), 'constraint satisfaction': is_valid}
+    tuning_color = round((topk_sols[0][valid_index].sum(dim=0) > 1e-3).sum().item(), 5)
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': tuning_color, 'eta':round(topk_etas[valid_index].item(),5), 'zeta':round(topk_zetas[valid_index].item(),5), 'constraint satisfaction': tuning_is_valid, 'constraint coeff':1}
 
     best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=tuned_sols[0].shape[0])
-    post_is_valid, valid_index = check_validity(sols=best_sol[0], graph=graph)
+    post_is_valid, valid_index = check_gcp_constraint(sols=best_sol[0], graph=graph)
     if post_is_valid:
         tuned_color = round((best_sol[0][valid_index].sum(dim=0) > 1e-3).sum().item(),5)
     else: tuned_color = tuning_color
 
     if tuned_color >= tuning_color:
         best_sol, best_val, best_eta, best_zeta = [topk_sols[0], topk_sols[1]], [topk_vals[0]], [topk_etas[0]], [topk_zetas[0]]
-        post_is_valid = is_valid
+        post_is_valid = tuning_is_valid
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': tuned_color, 'eta':round(best_eta[valid_index].item(),5), 'zeta':round(best_zeta[valid_index].item(),5), 'constraint satisfaction': post_is_valid}
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': tuned_color, 'eta':round(best_eta[valid_index].item(),5), 'zeta':round(best_zeta[valid_index].item(),5), 'constraint satisfaction': post_is_valid, 'constraint coeff':1}
 
     return tuning_result , tuned_result
 
 
-def eval_all_tsp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0):
+def eval_all_tsp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/tsp')):
     """
     Evaluate all TSP instances in the specified directory.
     
@@ -358,44 +398,34 @@ def eval_all_tsp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
         tuning_step_scale (int): Step scale for tuning phase.
         device (str): Device to run the evaluation on.
     """
-    # TSPディレクトリパス
-    tsp_dir = os.path.join(os.path.dirname(__file__), 'datasets/tsp')
 
     # ディレクトリ内の.tspファイルをすべて取得
-    tsp_files = [f for f in os.listdir(tsp_dir) if f.endswith('.tsp')]
+    tsp_files = [f for f in os.listdir(dir) if f.endswith('.tsp')]
 
     results = []
     for tsp_file in sorted(tsp_files):
-        # ファイル名から都市数（yyy部分）を抽出
-        filename = os.path.splitext(tsp_file)[0]  # 'xxxyyy'
-        try:
-            num_cities = int(''.join(filter(str.isdigit, filename[-6:])))
-        except ValueError:
-            continue  # 都市数が取得できない場合はスキップ
+        instance = os.path.join(dir, tsp_file)
+        for step_scale in step_scales:
+            torch.manual_seed(seed)
+            # 評価実行
+            tuning_result, tuned_result = eval_tsp(
+                instance=instance,
+                k=k,
+                genetic=genetic,
+                step_scale=step_scale,
+                tuning_step_scale=tuning_step_scale,
+                device=device
+            )
+            results += [tuning_result, tuned_result]
+            print("Tuning Result:", tuning_result)
+            print("Tuned Result:", tuned_result)
+            print("-" * 60)
+            df = pd.DataFrame(results)
+            target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
+            os.makedirs(target_dir, exist_ok=True)
+            df.to_csv(os.path.join(target_dir, 'tsp_results.csv'), index=False)
 
-        # 150都市以下のみ対象
-        if num_cities <= 150:
-            instance = os.path.join(tsp_dir, tsp_file)
-            for step_scale in step_scales:
-                print(f"Evaluating {tsp_file} ({num_cities} cities)...")
-                torch.manual_seed(seed)
-                # 評価実行
-                tuning_result, tuned_result = eval_tsp(
-                    instance=instance,
-                    k=k,
-                    genetic=genetic,
-                    step_scale=step_scale,
-                    tuning_step_scale=tuning_step_scale,
-                    device=device
-                )
-                results += [tuning_result, tuned_result]
-                print("Tuning Result:", tuning_result)
-                print("Tuned Result:", tuned_result)
-                print("-" * 60)
-                df = pd.DataFrame(results)
-                df.to_csv(os.path.join(os.path.dirname(__file__), 'results_k5/tsp_results.csv'), index=False)
-
-def eval_all_qap(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0):
+def eval_all_qap(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/qap')):
     """
     Evaluate all QAP instances in the specified directory.
     
@@ -407,44 +437,35 @@ def eval_all_qap(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
         tuning_step_scale (int): Step scale for tuning phase.
         device (str): Device to run the evaluation on.
     """
-    # QAPディレクトリパス
-    dir = os.path.join(os.path.dirname(__file__), 'datasets/qap')
 
     # ディレクトリ内の.qapファイルをすべて取得
     files = [f for f in os.listdir(dir) if f.endswith('.qap')]
 
     results = []
     for file in sorted(files):
-        # ファイル名から都市数（yyy部分）を抽出
-        filename = os.path.splitext(file)[0]  # 'xxxyyy'
-        try:
-            num_cities = int(''.join(filter(str.isdigit, filename[-6:])))
-        except ValueError:
-            continue  # 都市数が取得できない場合はスキップ
 
-        # 150都市以下のみ対象
-        if num_cities <= 150:
-            instance = os.path.join(dir, file)
-            for step_scale in step_scales:
-                print(f"Evaluating {file} ({num_cities} cities)...")
-                torch.manual_seed(seed)
-                # 評価実行
-                tuning_result, tuned_result = eval_qap(
-                    instance=instance,
-                    k=k,
-                    genetic=genetic,
-                    step_scale=step_scale,
-                    tuning_step_scale=tuning_step_scale,
-                    device=device
-                )
-                results += [tuning_result, tuned_result]
-                print("Tuning Result:", tuning_result)
-                print("Tuned Result:", tuned_result)
-                print("-" * 60)
-                df = pd.DataFrame(results)
-                df.to_csv(os.path.join(os.path.dirname(__file__), 'results_k5/qap_results.csv'), index=False)
+        instance = os.path.join(dir, file)
+        for step_scale in step_scales:
+            torch.manual_seed(seed)
+            # 評価実行
+            tuning_result, tuned_result = eval_qap(
+                instance=instance,
+                k=k,
+                genetic=genetic,
+                step_scale=step_scale,
+                tuning_step_scale=tuning_step_scale,
+                device=device
+            )
+            results += [tuning_result, tuned_result]
+            print("Tuning Result:", tuning_result)
+            print("Tuned Result:", tuned_result)
+            print("-" * 60)
+            df = pd.DataFrame(results)
+            target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
+            os.makedirs(target_dir, exist_ok=True)
+            df.to_csv(os.path.join(target_dir, 'qap_results.csv'), index=False)
 
-def eval_all_misp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0):
+def eval_all_misp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/misp')):
     """
     Evaluate all MISP instances in the specified directory.
     
@@ -456,8 +477,6 @@ def eval_all_misp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10,
         tuning_step_scale (int): Step scale for tuning phase.
         device (str): Device to run the evaluation on.
     """
-    # MISPディレクトリパス
-    dir = os.path.join(os.path.dirname(__file__), 'datasets/misp')
 
     # ディレクトリ内の.clqファイルをすべて取得
     files = [f for f in os.listdir(dir) if f.endswith('.clq')]
@@ -482,9 +501,11 @@ def eval_all_misp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10,
             print("Tuned Result:", tuned_result)
             print("-" * 60)
             df = pd.DataFrame(results)
-            df.to_csv(os.path.join(os.path.dirname(__file__), 'results_k5/misp_results.csv'), index=False)
+            target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
+            os.makedirs(target_dir, exist_ok=True)
+            df.to_csv(os.path.join(target_dir, 'misp_results.csv'), index=False)
 
-def eval_all_mcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0):
+def eval_all_mcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/mcp')):
     """
     Evaluate all MISP instances in the specified directory.
     
@@ -496,8 +517,6 @@ def eval_all_mcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
         tuning_step_scale (int): Step scale for tuning phase.
         device (str): Device to run the evaluation on.
     """
-    # MCPディレクトリパス
-    dir = os.path.join(os.path.dirname(__file__), 'datasets/mcp')
 
     # ディレクトリ内の.mcpファイルをすべて取得
     files = [f for f in os.listdir(dir) if f.endswith('.mcp')]
@@ -522,12 +541,14 @@ def eval_all_mcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
             print("Tuned Result:", tuned_result)
             print("-" * 60)
             df = pd.DataFrame(results)
-            df.to_csv(os.path.join(os.path.dirname(__file__), 'results_k5/mcp_results.csv'), index=False)
+            target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
+            os.makedirs(target_dir, exist_ok=True)
+            df.to_csv(os.path.join(target_dir, f'mcp_results.csv'), index=False)
 
 
 
 
-def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0):
+def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/gcp')):
     """
     Evaluate all MCP instances in the specified directory.
     
@@ -539,8 +560,6 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
         tuning_step_scale (int): Step scale for tuning phase.
         device (str): Device to run the evaluation on.
     """
-    # GCPディレクトリパス
-    dir = os.path.join(os.path.dirname(__file__), 'datasets/gcp')
 
     # ディレクトリ内の.mcpファイルをすべて取得
     files = [f for f in os.listdir(dir) if f.endswith('.col')]
@@ -548,83 +567,77 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
     results = []
     for file in sorted(files):
         instance = os.path.join(dir, file)
-        graph = torch.from_numpy(rf.GCP().read_file(instance)).float()
-        num_variables = (graph.shape[0] + 1) * (graph.sum(dim=0).max().item()+1) 
-        print(f"Number of variables in {file}: {num_variables}")
-        if num_variables <= 100000:
-            for step_scale in step_scales:
-                print(f"Evaluating {file} ...")
-                torch.manual_seed(seed)
-                # 評価実行
-                tuning_result, tuned_result = eval_gcp(
-                    instance=instance,
-                    k=k,
-                    genetic=genetic,
-                    step_scale=step_scale,
-                    tuning_step_scale=tuning_step_scale,
-                    device=device
-                )
-                results += [tuning_result, tuned_result]
-                print("Tuning Result:", tuning_result)
-                print("Tuned Result:", tuned_result)
-                print("-" * 60)
-                df = pd.DataFrame(results)
-                df.to_csv(os.path.join(os.path.dirname(__file__), 'results_k5/gcp_results.csv'), index=False)
+        for step_scale in step_scales:
+            print(f"Evaluating {file} ...")
+            torch.manual_seed(seed)
+            # 評価実行
+            tuning_result, tuned_result = eval_gcp(
+                instance=instance,
+                k=k,
+                genetic=genetic,
+                step_scale=step_scale,
+                tuning_step_scale=tuning_step_scale,
+                device=device
+            )
+            results += [tuning_result, tuned_result]
+            print("Tuning Result:", tuning_result)
+            print("Tuned Result:", tuned_result)
+            print("-" * 60)
+            df = pd.DataFrame(results)
+            target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
+            os.makedirs(target_dir, exist_ok=True)
+            df.to_csv(os.path.join(target_dir, 'gcp_results.csv'), index=False)
+
+
 
 
 if __name__ == "__main__":
-    for i in range(1):
-        torch.manual_seed(0)
-        result = eval_gcp(instance=os.path.dirname(__file__)+f'/datasets/gcp/DSJC500.1.col', k=5, genetic=True, tuning_step_scale=2, step_scale=10, device='cuda:0')
-        print(result)
+    # 再現性のためのシード固定
+    torch.manual_seed(0)
 
-# if __name__ == "__main__":
-#     # 再現性のためのシード固定
-#     torch.manual_seed(0)
+    eval_all_tsp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device='cuda:0',
+        seed=0
+    )
 
-#     eval_all_tsp(
-#         k=5,
-#         genetic=True,
-#         tuning_step_scale=2,
-#         step_scales=[1, 2, 5, 10, 20, 50],
-#         device='cuda:0',
-#         seed=0
-#     )
+    eval_all_qap(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device='cuda:0',
+        seed=0
+    )
 
-#     eval_all_qap(
-#         k=5,
-#         genetic=True,
-#         tuning_step_scale=2,
-#         step_scales=[1, 2, 5, 10, 20, 50],
-#         device='cuda:0',
-#         seed=0
-#     )
+    eval_all_misp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device='cuda:0',
+        seed=0
+    )
 
-#     eval_all_misp(
-#         k=5,
-#         genetic=True,
-#         tuning_step_scale=2,
-#         step_scales=[1, 2, 5, 10, 20, 50],
-#         device='cuda:0',
-#         seed=0
-#     )
+    eval_all_mcp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device='cuda:0',
+        seed=0
+    )   
 
-#     eval_all_mcp(
-#         k=5,
-#         genetic=True,
-#         tuning_step_scale=2,
-#         step_scales=[1, 2, 5, 10, 20, 50],
-#         device='cuda:0',
-#         seed=0
-#     )   
-
-#     eval_all_gcp(
-#         k=5,
-#         genetic=True,
-#         tuning_step_scale=2,
-#         step_scales=[1, 2, 5, 10, 20, 50],
-#         device='cuda:0',
-#         seed=0
-#     )
+    eval_all_gcp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device='cuda:0',
+        seed=0
+    )
 
 

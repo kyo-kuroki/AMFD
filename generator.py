@@ -5,10 +5,12 @@ import numpy as np
 
 class TSP():
     def __init__(self, d, coeff1=1, coeff2=1, device='cuda'):
-        self.d = d.to(device)
-        self.coeff1 = (coeff1 * (self.d.mean(dim=0)).max()).to(device)
-        self.coeff2 = (coeff2 * (self.d.mean(dim=0)).max()).to(device)
+        self.d = d.to(device).float()
+        self.d.fill_diagonal_(0.0)
         self.num_city = self.d.shape[0]
+        density = (self.d != 0).sum() / (self.d.numel() - self.num_city)
+        self.coeff1 = (coeff1 * (self.d.sum(dim=1) / ((self.num_city-1)*density)).max()).to(device)
+        self.coeff2 = (coeff2 * (self.d.sum(dim=1) / ((self.num_city-1)*density)).max()).to(device)
 
     
     def generator(self, x):
@@ -17,7 +19,6 @@ class TSP():
         '''
         
         Const1 = self.coeff1 * ((1 - x.sum(dim=0))**2).sum()
-
         Const2 = self.coeff2 * ((1 - x.sum(dim=1))**2).sum()
 
         part1 = ((x[:self.num_city-2, :] @ self.d[:self.num_city-1, :self.num_city-1]) * x[1:self.num_city-1, :]).sum()
@@ -29,9 +30,53 @@ class TSP():
 
         return H
     
-    
+    def to_device(self, device):
+        self.d = self.d.to(device)
+        self.coeff1 = self.coeff1.to(device)
+        self.coeff2 = self.coeff2.to(device)
     
 
+    def build_qubo(self, device='cuda'):
+        org_device = self.d.device
+        self.to_device(device)
+
+        T = N = self.num_city - 1
+        Q = torch.zeros((T, N, T, N), device=self.d.device)  # Q[t,i,u,j]
+
+        t = torch.arange(T, device=self.d.device)
+        i = torch.arange(N, device=self.d.device)
+
+        # --- 制約項1: 列制約 Qとh ---
+        t1, i1, i2 = torch.meshgrid(t, i, i, indexing='ij')
+        mask_diff = i1 != i2
+        Q[t1, i1, t1, i2] = self.coeff1 * mask_diff.float()
+        h = - self.coeff1 * torch.ones((T, N), device=self.d.device)
+
+        # --- 制約項2: 行制約 Qとh ---
+        i1, t1, t2 = torch.meshgrid(i, t, t, indexing='ij')
+        mask_diff2 = t1 != t2
+        Q[t1, i1, t2, i1] += self.coeff2 * mask_diff2.float()
+        h += - self.coeff2 #* torch.ones((T, N), device=self.d.device)
+
+        # --- 目的関数部分 Qとh ---
+        i1, j1, t1 = torch.meshgrid(i, i, torch.arange(T - 1, device=self.d.device), indexing='ij')
+        Q[t1, i1, t1 + 1, j1] += self.d[i1, j1]
+        d_end = self.d[:N, N]  # shape: (N,)
+        h[T - 1, :] += d_end
+        h[0, :] += d_end
+
+        # --- 対称化 & 対角成分0 ---
+        t_idx = torch.arange(T, device=self.d.device)
+        i_idx = torch.arange(N, device=self.d.device)
+        Q = Q + Q.permute(2, 3, 0, 1)
+        Q[t_idx[:, None], i_idx[None, :], t_idx[:, None], i_idx[None, :]] = 0.0
+
+        self.to_device(org_device)
+
+        return torch.reshape(h, (N*N, )), torch.reshape(Q, ((N) * (N), (N) * (N)))
+
+
+    
     
     def get_route(self, spin_dim2):
 
@@ -94,17 +139,23 @@ class QAP():
     def __init__(self, f, d, coeff1, coeff2, device='cuda'):
         self.factory_num = f.shape[0]
         self.city_num = d.shape[0]
-        self.d = d.to(device)
-        self.f = f.to(device)
+        self.d = d.to(device).float()
+        self.f = f.to(device).float()
         self.spin_num = self.factory_num**2
-        Mik = torch.zeros((self.city_num, self.city_num), device=self.d.device)
-        d = self.d.sum(dim=0)
-        f = self.f.sum(dim=0)
-        for i in range(self.city_num):
-            for k in range(self.city_num):
-                Mik[i][k] = (1/(self.city_num-1)) * d[i] * f[k]
-        self.coeff1 = coeff1 * (Mik).max()
-        self.coeff2 = coeff2 * (Mik).max()
+
+        f_sum = self.f.sum(dim=1)  # [n]
+        f_nonzero = ((self.f != 0).sum())  
+
+        d_sum = self.d.sum(dim=1)  # [n]
+        d_nonzero = ((self.d != 0).sum())
+
+        density = (d_nonzero + f_nonzero) / (self.d.numel() + self.f.numel() - 2*self.city_num)
+
+        # 外積で [n, n] 行列 M[i,k] を構築
+        M = f_sum.unsqueeze(1) * d_sum.unsqueeze(0) / ((self.city_num - 1) * density) # [n,1] × [1,n] → [n,n]
+
+        self.coeff1 = coeff1 * (M).max()
+        self.coeff2 = coeff2 * (M).max()
 
 
     def generator(self, x):
@@ -125,6 +176,47 @@ class QAP():
 
         return H
     
+    def to_device(self, device):
+        self.d = self.d.to(device)
+        self.f = self.f.to(device)
+        self.coeff1 = self.coeff1.to(device)
+        self.coeff2 = self.coeff2.to(device)
+
+    def build_qubo(self, device='cuda'):
+        N = self.factory_num  # assume square matrices of size N x N
+        org_device = self.f.device
+        self.to_device(device)
+
+        Q = torch.zeros((N, N, N, N), device=device)  # Q[i,j,k,l]
+        h = torch.zeros((N, N), device=device)
+
+        i = torch.arange(N, device=device)
+        j = torch.arange(N, device=device)
+
+        # === 制約項1: 各施設には1つの工場を割り当てる ===
+        # sum_i x[i,j] = 1  ⇨  ((1 - sum_i x[i,j])^2)
+        i1, i2, j1 = torch.meshgrid(i, i, j, indexing='ij')
+        mask1 = i1 != i2
+        Q[i1, j1, i2, j1] += self.coeff1 * mask1.float()
+        h[:, :] += -self.coeff1  # 各 j に -2 * coeff1、全体に同一値加算
+
+        # === 制約項2: 各工場には1つの施設を割り当てる ===
+        i1, j1, j2 = torch.meshgrid(i, j, j, indexing='ij')
+        mask2 = j1 != j2
+        Q[i1, j1, i1, j2] += self.coeff2 * mask2.float()
+        h[:, :] += -self.coeff2
+
+        # === 目的関数項 ===
+        # Obj = sum_{i,j,k,l} f[i,k] * d[j,l] * x[i,j] * x[k,l]
+        i1, j1, i2, j2 = torch.meshgrid(i, j, i, j, indexing='ij')
+        Q += self.f[i1, i2] * self.d[j1, j2]  # broadcasted outer product
+
+        # === 対称化 ===
+        Q = Q + Q.permute(2, 3, 0, 1)  # Q[k,l,i,j] を加算して対称化
+
+        self.to_device(org_device)
+        return h.reshape(N * N), Q.reshape(N * N, N * N)
+
 
 
 
@@ -202,6 +294,63 @@ class GCP():
 
         return H
     
+
+    def to_device(self, device):
+        self.E = self.E.to(device)
+        self.coeff1 = self.coeff1.to(device)
+        self.coeff2 = self.coeff2.to(device)
+        self.coeff3 = self.coeff3.to(device)
+
+    def build_qubo(self, device='cuda'):
+        N = self.num_node
+        C = self.num_color
+        M = N * C + C  # 総変数数（xとyを連結した1次元ベクトル）
+
+        org_device = self.E.device
+        self.to_device(device)
+
+        # QUBO行列と線形項
+        Q = torch.zeros((M, M), device=device)
+        h = torch.zeros(M, device=device)
+        offset = 0.0
+
+        # --- 目的関数: ∑ y[j] ---
+        y_start = N * C
+        h[y_start:] += 1.0
+
+        # --- Const1: 隣接ノードが同じ色を取らない ---
+        edge_i, edge_j = torch.nonzero(torch.triu(self.E), as_tuple=True)  # i<j のみ
+        for k in range(C):
+            xi = edge_i * C + k
+            xj = edge_j * C + k
+            Q[xi, xj] += 2 * self.coeff1
+            Q[xj, xi] += 2 * self.coeff1  # 対称性
+
+        # --- Const2: x[i,j]=1 ⇒ y[j]=1 ---
+        for j in range(C):
+            y_idx = y_start + j
+            x_idx = torch.arange(N, device=device) * C + j
+            Q[x_idx, x_idx] += 2 * self.coeff2  # x[i,j]^2 の項
+            Q[x_idx, y_idx] += -2 * self.coeff2
+            Q[y_idx, x_idx] += -2 * self.coeff2  # 対称項
+
+        # --- Const3: ノードごとに1色のみ（ワンホット） ---
+        for i in range(N):
+            x_idx = torch.arange(C, device=device) + i * C
+
+            Q[x_idx[:, None], x_idx[None, :]] += 4.0 * self.coeff3  # ∑x[i,j1]x[i,j2]
+            h[x_idx] += -6.0 * self.coeff3  # -2 * 2 * x[i,j]（線形項）
+
+        # --- 対角成分を h に吸収 ---
+        diag = torch.arange(M, device=device)
+        h += Q[diag, diag]
+        Q[diag, diag] = 0.0
+
+        self.to_device(org_device)
+        return h.detach(), Q.detach()
+
+
+    
     def draw_coloring(self, x: torch.Tensor):
         """
         Args:
@@ -270,6 +419,38 @@ class MISP():
 
         return H
     
+    def to_device(self, device):
+        self.E = self.E.to(device)
+        self.coeff1 = self.coeff1.to(device)
+
+    
+    def build_qubo(self, device='cuda'):
+        """
+        QUBO形式:  0.5 * x^T Q x + h^T x + offset
+        """
+        N = self.E.shape[0]
+        org_device = self.E.device
+        self.to_device(device)
+
+        Q = torch.zeros((N, N), device=device)
+        h = torch.zeros(N, device=device)
+
+        # --- Const1: xᵀ E x ---
+        # Q_ij = coeff1 * E_ij
+        Q += 2 * self.coeff1 * self.E
+
+        # --- 目的関数: -sum(x) ⇒ 線形項 h[i] += -1
+        h += -1.0
+
+        # --- 対角成分を h に吸収 ---
+        diag = torch.arange(N, device=device)
+        h += Q[diag, diag]
+        Q[diag, diag] = 0.0
+
+        self.to_device(org_device)
+
+        return h.detach(), Q.detach()
+    
     def draw_independent_set(self, x: torch.Tensor):
         """
         Args:
@@ -332,6 +513,34 @@ class MCP():
         """
 
         return -((x @ (self.graph)) * (1-x)).sum()  # maximize cut → minimize (–cut)
+    
+    def to_device(self, device):
+        self.graph = self.graph.to(device)
+    
+    def build_qubo(self, device='cuda'):
+        """
+        非対称グラフ対応のMax-Cut QUBO行列作成
+
+        Returns:
+            h: 一次係数ベクトル (N,)
+            Q: 二次係数行列 (N, N), 対角成分は0でhに吸収済み
+        """
+        W = self.graph  # 非対称隣接行列 (N x N)
+        N = W.shape[0]
+        org_device = W.device
+        self.to_device(device)
+
+        Q = W.clone()  # x_i x_j の係数は W_ij
+        h = -torch.sum(W, dim=1)  # x_i の係数は -sum_j W_ij
+
+        # 対角成分を h に吸収
+        diag = torch.arange(N, device=device)
+        h += Q[diag, diag]
+        Q[diag, diag] = 0.0
+
+        self.to_device(org_device)
+
+        return h.detach(), Q.detach()
     
     
 
