@@ -262,9 +262,9 @@ class GCP():
     def __init__(self, E, coeff1=1, coeff2=1, coeff3=1, num_color=None, device='cuda'):
         self.E = E.float().to(device)
         self.num_node = E.shape[0]
-        self.coeff1 = coeff1
-        self.coeff2 = coeff2
-        self.coeff3 = coeff3
+        self.coeff1 = torch.tensor(coeff1, device=device)
+        self.coeff2 = torch.tensor(coeff2, device=device)
+        self.coeff3 = torch.tensor(coeff3, device=device)
         if num_color == None:
             self.num_color = int((self.E.sum(dim=0)).max()+1)
         else: self.num_color = num_color
@@ -400,7 +400,7 @@ class MISP():
         self.device = device
         self.E = E.float().to(device)
         self.num_node = E.shape[0]
-        self.coeff1 = coeff1 
+        self.coeff1 = torch.tensor(coeff1, device=device) 
 
 
     def generator(self, x: torch.Tensor):

@@ -25,10 +25,13 @@ def get_amfd_result(csv_file, instance_name):
 
     return list(result.itertuples(index=False, name=None))
 
-def check_tsp_constraint(x):
+def check_double_onehot_constraint(x):
     is_valid = torch.allclose(x.sum(dim=0), torch.ones_like(x.sum(dim=0)), atol=1e-5) and \
         torch.allclose(x.sum(dim=1), torch.ones_like(x.sum(dim=1)), atol=1e-5)
     return is_valid
+
+def check_misp_constraint(x, graph):
+    return torch.allclose((x * (x @ graph)).sum(), torch.zeros(1, device=graph.device), atol=1e-5) 
 
 
 def eval_tsp(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, obj_log=[]):
@@ -51,14 +54,14 @@ def eval_tsp(instance, time_limit=60, target_obj=None, time_points=None, thread_
     results.append({'instance': Path(instance).stem, 'process':'MIQP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
 
     # QUBO solver
-    qubo, meta = md.get_qubo_save_memory(gn.TSP(torch.from_numpy(dists).float()).generator, {'x': torch.Size([dists.shape[0]-1, dists.shape[0]-1])}, device='cuda:0')
+    qubo, meta = md.get_qubo(gn.TSP(torch.from_numpy(dists).float()).generator, {'x': torch.Size([dists.shape[0]-1, dists.shape[0]-1])}, device='cuda:0')
     best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=obj_log)
     for t, obj, sol in obj_log:
         sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
-        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_tsp_constraint(sol['x']), 'best known solution':target_obj}
+        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_double_onehot_constraint(sol['x']), 'best known solution':target_obj}
         results.append(result)
     best_sol = md.restore_variables(torch.tensor(best_sol),meta['index_map'])
-    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_tsp_constraint(best_sol['x']), 'best known solution':target_obj})
+    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_double_onehot_constraint(best_sol['x']), 'best known solution':target_obj})
     return results
 
 def eval_qap(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, obj_log=[]):
@@ -81,18 +84,111 @@ def eval_qap(instance, time_limit=60, target_obj=None, time_points=None, thread_
     results.append({'instance': Path(instance).stem, 'process':'MIQP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
 
     # QUBO solver
-    qubo, meta = md.get_qubo_save_memory(gn.QAP(torch.from_numpy(flows).float(), torch.from_numpy(dists).float(), coeff1=1, coeff2=1).generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device='cuda:0')
+    qubo, meta = md.get_qubo(gn.QAP(torch.from_numpy(flows).float(), torch.from_numpy(dists).float(), coeff1=1, coeff2=1).generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device='cuda:0')
     best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=obj_log)
     for t, obj, sol in obj_log:
         sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
-        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_tsp_constraint(sol['x']), 'best known solution':target_obj}
+        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_double_onehot_constraint(sol['x']), 'best known solution':target_obj}
         results.append(result)
     best_sol = md.restore_variables(torch.tensor(best_sol),meta['index_map'])
-    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_tsp_constraint(best_sol['x']), 'best known solution':target_obj})
+    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_double_onehot_constraint(best_sol['x']), 'best known solution':target_obj})
     return results
 
 
+def eval_qap(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, obj_log=[]):
+
+    flows, dists = (rf.QAP().read_file(instance))
+
+    # MILP solver
+    results = []
+    best_sol, best_obj, runtime, obj_log = go.QAP(flows, dists).gurobi_optimize_MILP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MILP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MILP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # MIQP solver
+    best_sol, best_obj, runtime, obj_log = go.QAP(flows, dists).gurobi_optimize_MIQP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)  
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MIQP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MIQP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # QUBO solver
+    qubo, meta = md.get_qubo(gn.QAP(torch.from_numpy(flows).float(), torch.from_numpy(dists).float(), coeff1=1, coeff2=1).generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device='cuda:0')
+    best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
+        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_double_onehot_constraint(sol['x']), 'best known solution':target_obj}
+        results.append(result)
+    best_sol = md.restore_variables(torch.tensor(best_sol),meta['index_map'])
+    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_double_onehot_constraint(best_sol['x']), 'best known solution':target_obj})
+    return results
+
+
+def eval_misp(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, obj_log=[]):
+
+    E = (rf.MISP().read_file(instance))
+
+    # MILP solver
+    results = []
+    best_sol, best_obj, runtime, obj_log = go.MISP(E).gurobi_optimize_MILP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MILP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MILP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # MIQP solver
+    best_sol, best_obj, runtime, obj_log = go.MISP(E).gurobi_optimize_MIQP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)  
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MIQP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MIQP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # QUBO solver
+    qubo, meta = md.get_qubo(gn.MISP(torch.from_numpy(E).float(), coeff1=1).generator, {'x': torch.Size([E.shape[0]])}, device='cuda:0')
+    best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
+        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_misp_constraint(sol['x'], torch.from_numpy(E).float()), 'best known solution':target_obj}
+        results.append(result)
+    best_sol = md.restore_variables(torch.tensor(best_sol),meta['index_map'])
+    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_misp_constraint(best_sol['x'], torch.from_numpy(E).float()), 'best known solution':target_obj})
+    return results
+
+def eval_mcp(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, obj_log=[]):
+
+    E = (rf.MCP().read_file(instance))
+
+    # MILP solver
+    results = []
+    best_sol, best_obj, runtime, obj_log = go.MCP(E).gurobi_optimize_MILP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MILP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MILP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # MIQP solver
+    best_sol, best_obj, runtime, obj_log = go.MCP(E).gurobi_optimize_MIQP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)  
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MIQP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MIQP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # QUBO solver
+    qubo, meta = md.get_qubo(gn.MCP(torch.from_numpy(E).float()).generator, {'x': torch.Size([E.shape[0]])}, device='cuda:0')
+    best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
+        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    best_sol = md.restore_variables(torch.tensor(best_sol),meta['index_map'])
+    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+    return results
+
 def check_gcp_constraint(sols, graph):
+    if sols.ndim == 2:
+        sols.unsqueeze(0)
     zero = torch.tensor(0.0, device=sols.device)
     graph_expanded = graph.unsqueeze(0)  # shape: [1, N, N]
 
@@ -115,45 +211,54 @@ def check_gcp_constraint(sols, graph):
 
     is_valid = valid_mask.any().item()
 
-    if is_valid:
-        # 各バッチに対して、有効な行の数を数える（列和が1e-3より大きい行数）
-        row_counts = (sols.sum(dim=-2) > 1e-3).sum(dim=1)  # shape: [B]
-        
-        # 無効なバッチは無限大でマスク（ランキングから除外）
-        row_counts[~valid_mask] = sols.shape[-2]  # 無効なバッチは最大行数でマスク
+    return is_valid
 
-        # 最小行数を持つバッチのインデックスを取得
-        first_valid_index = torch.argmin(row_counts).item()
-    else:
-        first_valid_index = -1  # または -1 など
-    return is_valid, first_valid_index
+def eval_gcp(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, obj_log=[]):
+
+    E = (rf.GCP().read_file(instance))
+
+    # MILP solver
+    results = []
+    best_sol, best_obj, runtime, obj_log = go.GCP(E).gurobi_optimize_MILP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MILP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MILP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # MIQP solver
+    best_sol, best_obj, runtime, obj_log = go.GCP(E).gurobi_optimize_MIQP(time_limit=time_limit, thread_num=thread_num, target_obj=target_obj, time_points=time_points, obj_log=obj_log)  
+    for t, obj, sol in obj_log:
+        result = {'instance': Path(instance).stem, 'process':'MIQP', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': True, 'best known solution':target_obj}
+        results.append(result)
+    results.append({'instance': Path(instance).stem, 'process':'MIQP', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': True, 'best known solution':target_obj})
+
+    # QUBO solver
+    sample = gn.GCP(torch.from_numpy(E).float(), coeff1=1, coeff2=1, coeff3=1)
+    qubo, meta = md.get_qubo(sample.generator, {'x': torch.Size([E.shape[0], sample.num_color]), 'y':torch.Size([sample.num_color])}, device='cuda:0')
+    best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=obj_log)
+    for t, obj, sol in obj_log:
+        sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
+        result = {'instance': Path(instance).stem, 'process':'QUBO', 'time':round(t,5), 'value': round(obj,3), 'constraint satisfaction': check_gcp_constraint(sol['x'], torch.from_numpy(E).float()), 'best known solution':target_obj}
+        results.append(result)
+    best_sol = md.restore_variables(torch.tensor(best_sol),meta['index_map'])
+    results.append({'instance': Path(instance).stem, 'process':'QUBO', 'time':round(runtime,5), 'value': round(best_obj,3), 'constraint satisfaction': check_gcp_constraint(sol['x'], torch.from_numpy(E).float()), 'best known solution':target_obj})
+    return results
 
 
-
-def eval_all_tsp(datasets_dir, thread_num):
+def eval_all_tsp(datasets_dir, amfd_results_dir, thread_num):
     # ディレクトリ内の.tspファイルをすべて取得
     tsp_files = [f for f in os.listdir(datasets_dir) if f.endswith('.tsp')]
 
     results = []
     for tsp_file in sorted(tsp_files):
-        # ファイル名から都市数（yyy部分）を抽出
-        filename = os.path.splitext(tsp_file)[0]  # 'xxxyyy'
-        try:
-            num_cities = int(''.join(filter(str.isdigit, filename[-6:])))
-        except ValueError:
-            continue  # 都市数が取得できない場合はスキップ
-
-        # 150都市以下のみ対象
-        if num_cities <= 150:
-            instance = os.path.join(datasets_dir, tsp_file)
-            amfd_res = get_amfd_result(csv_file='/work2/k-kuroki/AMFD/edit/eddited_tsp_results.csv', instance_name=Path(instance).stem)
-            time_points = [t for t, v, best in amfd_res]
-            best_known = amfd_res[-1][-1]
-            print(f"Evaluating {tsp_file} ({num_cities} cities)...")
-            # 評価実行
-            results += eval_tsp(instance, time_limit=5*time_points[-1], target_obj=best_known, time_points=time_points, thread_num=thread_num, obj_log=[])
-            pd.DataFrame(results).to_csv(os.path.dirname(__file__)+'/results/tsp_results.csv')
-            print("-" * 60)
+        instance = os.path.join(datasets_dir, tsp_file)
+        amfd_res = get_amfd_result(csv_file=os.path.join(amfd_results_dir, 'tsp_results.csv'), instance_name=Path(instance).stem)
+        time_points = [t for t, v, best in amfd_res]
+        best_known = amfd_res[-1][-1]
+        # 評価実行
+        results += eval_tsp(instance, time_limit=5*time_points[-1], target_obj=best_known, time_points=time_points, thread_num=thread_num, obj_log=[])
+        pd.DataFrame(results).to_csv(os.path.dirname(__file__)+'/results/tsp_results.csv')
+        print("-" * 60)
 
 
 

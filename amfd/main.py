@@ -60,10 +60,10 @@ def crossover_parameters(eta_tensor: torch.Tensor, zeta_tensor: torch.Tensor):
 
     return new_eta, new_zeta
 
-def check_double_onehot_constraint(sol):
-    is_valid = torch.allclose(sol.sum(dim=-2), torch.ones_like(sol.sum(dim=-2)), atol=1e-5) and \
-        torch.allclose(sol.sum(dim=-1), torch.ones_like(sol.sum(dim=-1)), atol=1e-5)
-    return is_valid
+# def check_double_onehot_constraint(sol):
+#     is_valid = torch.allclose(sol.sum(dim=-2), torch.ones_like(sol.sum(dim=-2)), atol=1e-5) and \
+#         torch.allclose(sol.sum(dim=-1), torch.ones_like(sol.sum(dim=-1)), atol=1e-5)
+#     return is_valid
 
 # def check_double_onehot_constraint(sol):
 #     row_sum = sol.sum(dim=-2)
@@ -72,19 +72,19 @@ def check_double_onehot_constraint(sol):
 #     col_valid = torch.all(torch.isclose(col_sum, torch.ones_like(col_sum), atol=1e-5), dim=-1)
 #     return row_valid & col_valid  # shape: (B,)
 
-# def check_double_onehot_constraint(sol):
-#     row_sum = sol.sum(dim=-2)
-#     col_sum = sol.sum(dim=-1)
-#     row_valid = torch.all(torch.isclose(row_sum, torch.ones_like(row_sum), atol=1e-5), dim=-1)
-#     col_valid = torch.all(torch.isclose(col_sum, torch.ones_like(col_sum), atol=1e-5), dim=-1)
-#     is_valid = row_valid & col_valid  # shape: (B,)
+def check_double_onehot_constraint(sol):
+    row_sum = sol.sum(dim=-2)
+    col_sum = sol.sum(dim=-1)
+    row_valid = torch.all(torch.isclose(row_sum, torch.ones_like(row_sum), atol=1e-5), dim=-1)
+    col_valid = torch.all(torch.isclose(col_sum, torch.ones_like(col_sum), atol=1e-5), dim=-1)
+    is_valid = row_valid & col_valid  # shape: (B,)
 
-#     if torch.any(is_valid):
-#         first_valid_index = torch.nonzero(is_valid, as_tuple=True)[0][0].item()
-#     else:
-#         first_valid_index = None
+    if torch.any(is_valid):
+        first_valid_index = torch.nonzero(is_valid, as_tuple=True)[0][0].item()
+    else:
+        first_valid_index = None
 
-#     return torch.any(is_valid), first_valid_index
+    return torch.any(is_valid).item(), first_valid_index
 
 
 def eval_tsp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
@@ -107,7 +107,8 @@ def eval_tsp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
         tuning_end_time = time.time()
 
         topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
-        if check_double_onehot_constraint(topk_sols[0][0]):
+        is_valid, valid_idx = check_double_onehot_constraint(topk_sols[0])
+        if is_valid:
             break
         else: 
             coeff *= 1.1
@@ -128,16 +129,17 @@ def eval_tsp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     end_time = time.time()
 
     # 結果の確認
-    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=1)
-    if best_val[0].item() > topk_vals[0].item():
-        best_sol, best_val, best_eta, best_zeta = [topk_sols[0]], [topk_vals[0]], [topk_etas[0]], [topk_zetas[0]]
+    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=tuned_vals.numel())
+    is_valid, _ = check_double_onehot_constraint(best_sol[0])
+    if  not is_valid or best_val[_].item() > topk_vals[valid_idx].item():
+        best_sol, best_val, best_eta, best_zeta = topk_sols, topk_vals, topk_etas, topk_zetas
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
 
-    is_valid = check_double_onehot_constraint(topk_sols[0][0])
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
-    is_valid = check_double_onehot_constraint(best_sol[0][0])
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
+    is_valid, valid_idx = check_double_onehot_constraint(topk_sols[0])
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[valid_idx].item(),5), 'eta':round(topk_etas[valid_idx].item(),5), 'zeta':round(topk_zetas[valid_idx].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
+    is_valid, valid_idx = check_double_onehot_constraint(best_sol[0])
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[valid_idx].item(),5), 'eta':round(best_eta[valid_idx].item(),5), 'zeta':round(best_zeta[valid_idx].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
 
     return tuning_result , tuned_result
 
@@ -165,7 +167,8 @@ def eval_qap(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
         tuning_end_time = time.time()
 
         topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
-        if check_double_onehot_constraint(topk_sols[0][0]):
+        is_valid, valid_idx = check_double_onehot_constraint(topk_sols[0])
+        if is_valid:
             break
         else:
             coeff *= 1.1
@@ -185,18 +188,44 @@ def eval_qap(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     end_time = time.time()
 
     # 結果の確認
-    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=1)
-    if best_val[0].item() > topk_vals[0].item():
-        best_sol, best_val, best_eta, best_zeta = [topk_sols[0]], [topk_vals[0]], [topk_etas[0]], [topk_zetas[0]]
+    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=tuned_vals.numel())
+    is_valid, _ = check_double_onehot_constraint(best_sol[0])
+    if not is_valid or best_val[_].item() > topk_vals[valid_idx].item():
+        best_sol, best_val, best_eta, best_zeta = topk_sols, topk_vals, topk_etas, topk_zetas
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
 
-    is_valid = check_double_onehot_constraint(topk_sols[0][0])
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
-    is_valid = check_double_onehot_constraint(best_sol[0][0])
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
+    is_valid, valid_idx = check_double_onehot_constraint(topk_sols[0])
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[valid_idx].item(),5), 'eta':round(topk_etas[valid_idx].item(),5), 'zeta':round(topk_zetas[valid_idx].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
+    is_valid, valid_idx = check_double_onehot_constraint(best_sol[0])
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[valid_idx].item(),5), 'eta':round(best_eta[valid_idx].item(),5), 'zeta':round(best_zeta[valid_idx].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':coeff}
 
     return tuning_result , tuned_result
+
+
+def check_misp_constraint(sols, graph, atol=1e-5):
+    """
+    Parameters:
+        sols: Tensor of shape (B, N)
+        graph: Tensor of shape (N, N)
+        atol: float
+
+    Returns:
+        mask: BoolTensor of shape (B,), 各バッチで条件を満たすかどうか
+        first_valid_index: int or None, 条件を満たす最初のバッチのインデックス（なければ None）
+    """
+    # (B, N) @ (N, N) → (B, N)
+    prod = sols @ graph
+    elementwise = sols * prod  # (B, N)
+    sums = elementwise.sum(dim=1)  # (B,)
+    
+    mask = torch.isclose(sums, torch.zeros_like(sums), atol=atol)
+
+    # 最初にTrueになるインデックスを取得（なければ None）
+    first_valid_index = mask.nonzero(as_tuple=True)[0]
+    first_valid_index = first_valid_index[0].item() if first_valid_index.numel() > 0 else None
+
+    return torch.any(mask).item(), first_valid_index
 
 
 def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
@@ -232,15 +261,16 @@ def eval_misp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, d
     end_time = time.time()
 
     # 結果の確認
-    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=1)
-    if best_val[0].item() > topk_vals[0].item():
-        best_sol, best_val, best_eta, best_zeta = [topk_sols[0]], [topk_vals[0]], [topk_etas[0]], [topk_zetas[0]]
+    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=tuned_vals.numel())
+    tuning_valid, tuning_idx = check_misp_constraint(topk_sols, graph)
+    tuned_valid, tuned_idx = check_misp_constraint(best_sol, graph)
+    if not tuned_valid or best_val[tuned_idx].item() > topk_vals[tuning_idx].item():
+        best_sol, best_val, best_eta, best_zeta = topk_sols, topk_vals, topk_etas, topk_zetas
         print("Tuning did not improve the solution, using the best from tuning phase.")
 
-    is_valid = torch.allclose((topk_sols[0][0] * (topk_sols[0][0] @ graph)).sum(), torch.zeros(1, device=graph.device), atol=1e-5) 
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':1}
-    is_valid = torch.allclose((best_sol[0][0] * (best_sol[0][0] @ graph)).sum(), torch.zeros(1, device=graph.device), atol=1e-5) 
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': is_valid, 'constraint coeff':1}
+
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[tuning_idx].item(),5), 'eta':round(topk_etas[tuning_idx].item(),5), 'zeta':round(topk_zetas[tuning_idx].item(),5), 'constraint satisfaction': tuning_valid, 'constraint coeff':1}
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[tuned_idx].item(),5), 'eta':round(best_eta[tuned_idx].item(),5), 'zeta':round(best_zeta[tuned_idx].item(),5), 'constraint satisfaction': tuned_valid, 'constraint coeff':1}
 
     return tuning_result , tuned_result
 
@@ -593,51 +623,53 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
 
 if __name__ == "__main__":
     # 再現性のためのシード固定
-    torch.manual_seed(0)
+    seed = 0
+    torch.manual_seed(seed)
+    device = 'cuda:0'
 
-    eval_all_tsp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device='cuda:0',
-        seed=0
-    )
+    # eval_all_tsp(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )
 
-    eval_all_qap(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device='cuda:0',
-        seed=0
-    )
+    # eval_all_qap(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )
 
-    eval_all_misp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device='cuda:0',
-        seed=0
-    )
+    # eval_all_misp(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )
 
-    eval_all_mcp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device='cuda:0',
-        seed=0
-    )   
+    # eval_all_mcp(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )   
 
     eval_all_gcp(
         k=5,
         genetic=True,
         tuning_step_scale=2,
         step_scales=[2, 5, 10, 20, 50],
-        device='cuda:0',
-        seed=0
+        device=device,
+        seed=seed
     )
 
 

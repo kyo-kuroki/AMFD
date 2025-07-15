@@ -67,7 +67,7 @@ def squared_norm_and_diag_hessians(f: Callable, arg_shapes: List[torch.Size], m:
         try:
             h, Q = generate_function(device='cpu')
             h_squared_norm, Q_squared_norm = (h**2).sum().to(device), (Q**2).sum().to(device)
-        except Exception:
+        except Exception as e:
             print(f"Direct computing Hessian was failed: {e}. Computing row-wise.")
             h = torch.cat([g.reshape(-1) for g in grads])
             def row_hesse(h_i):
