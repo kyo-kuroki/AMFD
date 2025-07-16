@@ -4,7 +4,7 @@ import os
 import math
 
 # 入力CSVファイル名（適宜変更）
-prb = 'mcp'
+prb = 'gcp'
 input_csv = os.path.dirname(os.path.dirname(__file__)) + '/amfd/results_k5/{}_results.csv'.format(prb)
 output_csv = os.path.dirname(__file__) + '/{}_results.csv'.format(prb)
 output_plot_dir = os.path.dirname(__file__) + '/plots'
@@ -30,7 +30,7 @@ with open(solutions_file, 'r') as f:
     for line in f:
         if ':' in line:
             instance, value = line.strip().split(':')
-            best_solutions[instance.strip()] = int(value.strip())
+            best_solutions[instance.strip()] = (value.strip())
 
 # 辞書をSeriesにしてマージ
 solution_series = pd.Series(best_solutions, name='best known solution')

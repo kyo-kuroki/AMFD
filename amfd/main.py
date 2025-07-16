@@ -12,6 +12,7 @@ import math
 import time
 from pathlib import Path
 import pandas as pd
+import copy
 
 
 def get_top_k(solutions, results, eta, zeta, k=5):
@@ -60,17 +61,6 @@ def crossover_parameters(eta_tensor: torch.Tensor, zeta_tensor: torch.Tensor):
 
     return new_eta, new_zeta
 
-# def check_double_onehot_constraint(sol):
-#     is_valid = torch.allclose(sol.sum(dim=-2), torch.ones_like(sol.sum(dim=-2)), atol=1e-5) and \
-#         torch.allclose(sol.sum(dim=-1), torch.ones_like(sol.sum(dim=-1)), atol=1e-5)
-#     return is_valid
-
-# def check_double_onehot_constraint(sol):
-#     row_sum = sol.sum(dim=-2)
-#     col_sum = sol.sum(dim=-1)
-#     row_valid = torch.all(torch.isclose(row_sum, torch.ones_like(row_sum), atol=1e-5), dim=-1)
-#     col_valid = torch.all(torch.isclose(col_sum, torch.ones_like(col_sum), atol=1e-5), dim=-1)
-#     return row_valid & col_valid  # shape: (B,)
 
 def check_double_onehot_constraint(sol):
     row_sum = sol.sum(dim=-2)
@@ -321,7 +311,7 @@ def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
 
 def check_gcp_constraint(sols, graph):
     zero = torch.tensor(0.0, device=sols.device)
-    graph_expanded = graph.unsqueeze(0)  # shape: [1, N, N]
+    graph_expanded = graph.unsqueeze(0).to(sols.device)  # shape: [1, N, N]
 
     # 条件1: xᵀ @ graph @ x ≈ 0
     cond1_vals = torch.isclose(
@@ -344,7 +334,7 @@ def check_gcp_constraint(sols, graph):
 
     if is_valid:
         # 各バッチに対して、有効な行の数を数える（列和が1e-3より大きい行数）
-        row_counts = (sols.sum(dim=-2) > 1e-3).sum(dim=1)  # shape: [B]
+        row_counts = (sols.sum(dim=-2) > 0.1).sum(dim=1)  # shape: [B]
         
         # 無効なバッチは無限大でマスク（ランキングから除外）
         row_counts[~valid_mask] = sols.shape[-2]  # 無効なバッチは最大行数でマスク
@@ -352,7 +342,7 @@ def check_gcp_constraint(sols, graph):
         # 最小行数を持つバッチのインデックスを取得
         first_valid_index = torch.argmin(row_counts).item()
     else:
-        first_valid_index = -1  # または -1 など
+        first_valid_index = 0  # または -1 など
     return is_valid, first_valid_index
 
 def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
@@ -368,24 +358,27 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
 
     start_time = time.time()
 
-    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
-    tuning_is_valid = False
-    while True:
-        sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
-        topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
-        is_valid, valid_index = check_gcp_constraint(sols=topk_sols[0], graph=graph)
-        if is_valid:
-            del diag_hessians, squared_norm
-            num_color = int(round((topk_sols[0][valid_index].sum(dim=0) > 1e-3).sum().item(), 5))
-            sample = gn.GCP(graph, coeff1=1, coeff2=1, coeff3=1, num_color=int(num_color-1), device=device)
-            shapes = [torch.Size([num_nodes, sample.num_color]), torch.Size([sample.num_color])]
-            squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
-            tuning_is_valid = True
-        else: break
-
+    b_val = sample.num_color+1
+    val = sample.num_color
+    b_sols, b_vals, b_etas, b_zetas = {}, {}, {}, {}
+    i = 0
+    while b_val > val or valid:
+        b_val = copy.copy(val)
+        sols, vals, etas, zetas = b_sols, b_vals, b_etas, b_zetas
+        squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo) 
+        b_sols, b_vals, b_etas, b_zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+        val = torch.min(b_vals).item()
+        sample = gn.GCP(graph, coeff1=1, coeff2=1, coeff3=1, num_color=int(min(val, b_val)-1), device=device)
+        shapes = [torch.Size([num_nodes, sample.num_color]), torch.Size([sample.num_color])]
+        squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
+        valid, idx = check_gcp_constraint(b_sols[0], graph)
+        print(valid)
+        i += 1
+    if i == 1:
+        sols, vals, etas, zetas = b_sols, b_vals, b_etas, b_zetas
     tuning_end_time = time.time()
 
-
+    topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(b_sols, b_vals, b_etas, b_zetas, k=k)
     if genetic:
         # 遺伝的アルゴリズムを使用して最適化
         cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
@@ -397,21 +390,25 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     end_time = time.time()
 
     # 結果の確認
-    tuning_color = round((topk_sols[0][valid_index].sum(dim=0) > 1e-3).sum().item(), 5)
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': tuning_color, 'eta':round(topk_etas[valid_index].item(),5), 'zeta':round(topk_zetas[valid_index].item(),5), 'constraint satisfaction': tuning_is_valid, 'constraint coeff':1}
+    tuning_is_valid, tuning_valid_index = check_gcp_constraint(sols=sols[0], graph=graph)
+    tuning_color = round((sols[0][tuning_valid_index].sum(dim=0) > 1e-3).sum().item(), 1)
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': tuning_color, 'eta':round(etas[tuning_valid_index].item(),5), 'zeta':round(zetas[tuning_valid_index].item(),5), 'constraint satisfaction': tuning_is_valid, 'constraint coeff':1}
 
-    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=tuned_sols[0].shape[0])
-    post_is_valid, valid_index = check_gcp_constraint(sols=best_sol[0], graph=graph)
-    if post_is_valid:
-        tuned_color = round((best_sol[0][valid_index].sum(dim=0) > 1e-3).sum().item(),5)
+    post_is_valid, post_valid_index = check_gcp_constraint(sols=tuned_sols[0], graph=graph)
+    if post_is_valid: # 制約充足解が発見されなかった場合
+        tuned_color = round((tuned_sols[0][post_valid_index].sum(dim=0) > 1e-3).sum().item(),1)
     else: tuned_color = tuning_color
 
-    if tuned_color >= tuning_color:
-        best_sol, best_val, best_eta, best_zeta = [topk_sols[0], topk_sols[1]], [topk_vals[0]], [topk_etas[0]], [topk_zetas[0]]
+    if tuned_color >= tuning_color: # 改善しなかった場合
+        best_sol, best_val, best_eta, best_zeta = sols, vals, etas, zetas
         post_is_valid = tuning_is_valid
+        post_valid_index = tuning_valid_index
+        tuned_color = tuning_color
         print("Tuning did not improve the solution, using the best from tuning phase.")
+    else:
+        best_sol, best_val, best_eta, best_zeta = tuned_sols, tuned_vals, tuned_etas, tuned_zetas
 
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': tuned_color, 'eta':round(best_eta[valid_index].item(),5), 'zeta':round(best_zeta[valid_index].item(),5), 'constraint satisfaction': post_is_valid, 'constraint coeff':1}
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': tuned_color, 'eta':round(best_eta[post_valid_index].item(),5), 'zeta':round(best_zeta[post_valid_index].item(),5), 'constraint satisfaction': post_is_valid or tuning_is_valid, 'constraint coeff':1}
 
     return tuning_result , tuned_result
 
@@ -627,41 +624,41 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     device = 'cuda:0'
 
-    # eval_all_tsp(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )
+    eval_all_tsp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )
 
-    # eval_all_qap(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )
+    eval_all_qap(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )
 
-    # eval_all_misp(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )
+    eval_all_misp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )
 
-    # eval_all_mcp(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )   
+    eval_all_mcp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )   
 
     eval_all_gcp(
         k=5,

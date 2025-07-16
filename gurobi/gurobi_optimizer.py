@@ -1,102 +1,10 @@
 import gurobipy as gp
 from gurobipy import Model, quicksum, GRB
 import numpy as np
+import tqdm
+from gurobipy import LinExpr, QuadExpr
+import torch
 
-
-
-
-# def callback(time_limit=None, target_obj=None, time_points=None, obj_log=None):
-#     """
-#     time_limit   : float or None
-#         指定秒数を超えたら打ち切る（例: 60）
-#     target_obj   : float or None
-#         指定値以下の目的関数値が出たら打ち切る
-#     time_points  : list of float or None
-#         指定時刻に目的関数を記録する（例: [1, 5, 10]）
-#     obj_log      : list or None
-#         時刻と目的値を記録する [(t, obj)] を格納するリスト（外部から渡す）
-#     """
-#     if time_points is None:
-#         time_points = []
-#     time_points = sorted(time_points)
-#     recorded = set()  # 記録済みの時刻を追跡
-
-#     def my_callback(model, where):
-#         # 現在の経過時間（Gurobiが保証する内部時間）
-#         runtime = model.cbGet(gp.GRB.Callback.RUNTIME)
-
-#         # --- 時間制限による打ち切り ---
-#         if time_limit is not None:
-#             if runtime > time_limit:
-#                 print(f"[{runtime:.2f}s] 時間制限 {time_limit} 秒を超えたので打ち切ります")
-#                 model.terminate()
-#                 return
-
-#         # --- 目標値による打ち切り（解が見つかったときのみ） ---
-#         if target_obj is not None and where == gp.GRB.Callback.MIPSOL:
-#             obj = model.cbGet(gp.GRB.Callback.MIPSOL_OBJ)
-#             if obj <= target_obj:
-#                 print(f"[{runtime:.2f}s] 目標値 {target_obj} に達したので打ち切ります（現在: {obj}）")
-#                 model.terminate()
-#                 return
-
-#         # --- 指定時刻での目的関数の記録 ---
-#         if obj_log is not None:
-#             for t in time_points:
-#                 if t not in recorded and runtime >= t:
-#                     try:
-#                         obj = model.cbGet(gp.GRB.Callback.MIP_OBJBST)
-#                     except gp.GurobiError:
-#                         obj = None
-#                     obj_log.append((t, obj))
-#                     recorded.add(t)
-#                     print(f"[{runtime:.2f}s] 時刻 {t:.1f} 秒の目的関数値を記録: {obj}")
-
-#     return my_callback
-
-# def callback(time_limit=None, target_obj=None, time_points=None, obj_log=None):
-#     if time_points is None:
-#         time_points = []
-#     time_points = sorted(time_points)
-#     recorded = set()
-
-#     def my_callback(model, where):
-#         # RUNTIMEの取得は許可されたイベントのときだけ行う
-#         if where in [
-#             gp.GRB.Callback.MIP,
-#             gp.GRB.Callback.MIPSOL,
-#             gp.GRB.Callback.MIPNODE,
-#             gp.GRB.Callback.SIMPLEX,
-#             gp.GRB.Callback.BARRIER
-#         ]:
-#             runtime = model.cbGet(gp.GRB.Callback.RUNTIME)
-
-#             # 時間制限チェック
-#             if time_limit is not None and runtime > time_limit:
-#                 print(f"[{runtime:.2f}s] 時間制限 {time_limit} 秒を超えたので打ち切ります")
-#                 model.terminate()
-#                 return
-
-#             # 指定時刻における目的値の記録
-#             if obj_log is not None and where in [gp.GRB.Callback.MIP, gp.GRB.Callback.MIPNODE, gp.GRB.Callback.MIPSOL]:
-#                 for t in time_points:
-#                     if t not in recorded and runtime >= t:
-#                         try:
-#                             obj = model.cbGet(gp.GRB.Callback.MIP_OBJBST)
-#                         except gp.GurobiError:
-#                             obj = None
-#                         obj_log.append((t, obj))
-#                         recorded.add(t)
-#                         print(f"[{runtime:.2f}s] 時刻 {t:.1f} 秒の目的関数値を記録: {obj}")
-
-#         # 目標値による打ち切り（MIPSOLのときのみ）
-#         if target_obj is not None and where == gp.GRB.Callback.MIPSOL:
-#             obj = model.cbGet(gp.GRB.Callback.MIPSOL_OBJ)
-#             if obj <= target_obj:
-#                 print(f"目標値 {target_obj} に達したので打ち切ります（現在: {obj}）")
-#                 model.terminate()
-
-#     return my_callback
 
 def callback(time_limit=None, target_obj=None, time_points=None, obj_log=None):
     if time_points is None:
@@ -150,20 +58,19 @@ def callback(time_limit=None, target_obj=None, time_points=None, obj_log=None):
     return my_callback
 
 
-# 使い方
-'''
-model = gp.Model()
-model.optimize(callback(time_limit=60, target_obj=0))
-'''
-
-
 
 
 class QUBO():
     def __init__(self, Q, h, const=0):
         self.spin_num = len(h)
-        self.Q = Q
-        self.h = h
+        if isinstance(Q, torch.Tensor):
+            self.Q = Q.detach().cpu()
+        else:
+            self.Q = Q
+        if isinstance(h, torch.Tensor):
+            self.h = h.detach().cpu()
+        else:
+            self.h = h
         self.const = const
         self.energy_trans = []
         self.model = Model("QUBO")
@@ -173,10 +80,31 @@ class QUBO():
             self.x.append(self.model.addVar(vtype=GRB.BINARY, name=f"x({i})"))
 
         # 目的関数の設定
-        self.obj = quicksum(self.h[i] * self.x[i] for i in range(self.spin_num)) + \
-              quicksum(self.Q[i, j] * self.x[i] * self.x[j] for i in range(self.spin_num) for j in range(i + 1, self.spin_num)) + self.const
-        
-        self.model.setObjective(self.obj, GRB.MINIMIZE)
+        x_vars = np.array([self.x[i] for i in range(self.spin_num)])
+        h = np.asarray(self.h)
+        Q = np.asarray(self.Q)
+
+        # 目的関数構築
+        obj = QuadExpr()
+
+        # 線形項
+        obj.addTerms(h.tolist(), x_vars.tolist())
+
+        # 二次項（上三角部分のみ）
+        i_idx, j_idx = np.triu_indices(self.spin_num, k=1)
+        q_vals = Q[i_idx, j_idx]
+
+        mask = np.abs(q_vals) > 1e-10
+        i_idx, j_idx, q_vals = i_idx[mask], j_idx[mask], q_vals[mask]
+
+        obj.addTerms(q_vals.tolist(), x_vars[i_idx].tolist(), x_vars[j_idx].tolist())
+
+        # 定数項
+        if hasattr(self, "const") and self.const != 0:
+            obj += self.const
+
+        self.model.setObjective(obj, GRB.MINIMIZE)
+
         
     
     def gurobi_optimize_QUBO(self, time_limit=10, thread_num=0, target_obj=None, time_points=None, obj_log=None):
@@ -187,7 +115,9 @@ class QUBO():
         self.model._time_limit = time_limit
 
         # 最適化の実行
-        self.model.optimize(callback(time_limit=time_limit, target_obj=target_obj, time_points=time_points, obj_log=obj_log))
+        cb = callback(time_limit=time_limit, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+        self.model.optimize(cb)
+
 
         # 結果の取得
         solution = np.array([v.x for v in self.x])
@@ -203,6 +133,8 @@ class QAP:
     def __init__(self, flow=None, dist=None):
         self.Fij = flow
         self.Dij = dist
+        self.factory_num = flow.shape[0]
+        self.city_num = dist.shape[0]
     
 
     def gurobi_optimize_MIQP(self,time_limit=60, thread_num=0, target_obj=None, time_points=None, obj_log=None):
@@ -214,12 +146,42 @@ class QAP:
             for j in range(N):
                 x[i, j] = self.model.addVar(vtype=GRB.BINARY, name=f"x[{i},{j}]")
         # 目的関数の定義
-        self.model.setObjective(quicksum(self.Fij[i, j] * self.Dij[k, l] * x[i, k] * x[j, l] for i in range(N) for j in range(N) for k in range(N) for l in range(N)), GRB.MINIMIZE)
+
+        Q = QuadExpr()
+        terms = []
+        vars1 = []
+        vars2 = []
+
+        for i in tqdm.tqdm(range(N)):
+            for j in range(N):
+                fij = self.Fij[i, j]
+                for k in range(N):
+                    for l in range(N):
+                        coef = fij * self.Dij[k, l]
+                        terms.append(coef)
+                        vars1.append(x[i, k])
+                        vars2.append(x[j, l])
+
+        Q.addTerms(terms, vars1, vars2)
+        self.model.setObjective(Q, GRB.MINIMIZE)
+
         # 制約の定義
-        for j in range(N):
-            self.model.addConstr(quicksum(x[i, j] for i in range(N)) == 1)
-        for i in range(N):
-            self.model.addConstr(quicksum(x[i, j] for j in range(N)) == 1)
+
+        # 列ごとのワンホット制約（j固定）
+        for j in tqdm.tqdm(range(N)):
+            expr = LinExpr()
+            vars_ = [x[i, j] for i in range(N)]
+            coeffs = [1.0] * N
+            expr.addTerms(coeffs, vars_)
+            self.model.addConstr(expr == 1)
+
+        # 行ごとのワンホット制約（i固定）
+        for i in tqdm.tqdm(range(N)):
+            expr = LinExpr()
+            vars_ = [x[i, j] for j in range(N)]
+            coeffs = [1.0] * N
+            expr.addTerms(coeffs, vars_)
+            self.model.addConstr(expr == 1)
 
         # パラメータ設定
         self.model.setParam(GRB.Param.TimeLimit, time_limit)
@@ -249,14 +211,7 @@ class QAP:
         self.model = Model("QAP")
         N = self.factory_num
         V = list(range(N))
-        M ={}
-        for i in V:
-            for k in V:
-                sum_ = 0
-                for j in V: 
-                    for ell in V:
-                        sum_ += self.Fij[i,j]*self.Dij[k,ell]
-                M[i,k] = sum_
+        M = np.einsum('ij,kl->ik', self.Fij, self.Dij)
 
         x, w = {}, {}
         for i in V:
@@ -265,15 +220,37 @@ class QAP:
                 x[i, j] = self.model.addVar(vtype="B", name=f"x[{i},{j}]")
         self.model.update()
 
-        for j in V:
-            self.model.addConstr(quicksum(x[i, j] for i in V) == 1)
-        for i in V:
-            self.model.addConstr(quicksum(x[i, j] for j in V) == 1)
 
-        for i in V:
+        # 列ごとのワンホット制約（j固定）
+        for j in tqdm.tqdm(range(N)):
+            expr = LinExpr()
+            vars_ = [x[i, j] for i in range(N)]
+            coeffs = [1.0] * N
+            expr.addTerms(coeffs, vars_)
+            self.model.addConstr(expr == 1)
+
+        # 行ごとのワンホット制約（i固定）
+        for i in tqdm.tqdm(range(N)):
+            expr = LinExpr()
+            vars_ = [x[i, j] for j in range(N)]
+            coeffs = [1.0] * N
+            expr.addTerms(coeffs, vars_)
+            self.model.addConstr(expr == 1)
+
+                
+        for i in tqdm.tqdm(V):
             for k in V:
-                self.model.addConstr(M[i,k]*(x[i,k]-1) +
-                                quicksum(self.Fij[i,j]*self.Dij[k,ell]*x[j,ell] for j in V for ell in V) <= w[i,k])
+                linexpr = LinExpr()
+                coeffs = []
+                vars_ = []
+                for j in V:
+                    for ell in V:
+                        coeffs.append(self.Fij[i,j] * self.Dij[k,ell])
+                        vars_.append(x[j,ell])
+                linexpr.addTerms(coeffs, vars_)
+                lhs = M[i,k]*(x[i,k]-1) + linexpr
+                self.model.addConstr(lhs <= w[i,k])
+
             
         self.model.setObjective(
             quicksum(
@@ -333,10 +310,21 @@ class TSP:
         self.model.setObjective(quicksum(self.Dij[i, N-1] * x[0, i] + self.Dij[i, N-1] * x[N-2, i] for i in range(N-1)) \
                                 + quicksum(self.Dij[i, j] * x[t, i] * x[t+1, j] for i in range(N-1) for j in range(N-1) for t in range(N-2)), GRB.MINIMIZE)
         # 制約の定義
-        for j in range(N-1):
-            self.model.addConstr(quicksum(x[i, j] for i in range(N-1)) == 1)
-        for i in range(N-1):
-            self.model.addConstr(quicksum(x[i, j] for j in range(N-1)) == 1)
+        # 列ごとのワンホット制約
+        for j in range(N - 1):
+            expr = LinExpr()
+            vars_ = [x[i, j] for i in range(N - 1)]
+            coeffs = [1.0] * (N - 1)
+            expr.addTerms(coeffs, vars_)
+            self.model.addConstr(expr == 1)
+
+        # 行ごとのワンホット制約
+        for i in range(N - 1):
+            expr = LinExpr()
+            vars_ = [x[i, j] for j in range(N - 1)]
+            coeffs = [1.0] * (N - 1)
+            expr.addTerms(coeffs, vars_)
+            self.model.addConstr(expr == 1)
 
         # パラメータ設定
         self.model.setParam(GRB.Param.TimeLimit, time_limit)
@@ -344,7 +332,9 @@ class TSP:
         self.model._time_limit = time_limit
 
         # 実行
-        self.model.optimize(callback(time_limit=time_limit, target_obj=target_obj, time_points=time_points, obj_log=obj_log))
+        cb = callback(time_limit=time_limit, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+        self.model.optimize(cb)
+        
 
         # 結果の取得
         if self.model.SolCount > 0:
@@ -371,19 +361,17 @@ class TSP:
         """
         n = self.city_num
         self.model = Model("TSP")
-        x, f = {}, {}
-        for i in range(1, n + 1):
-            for j in range(1, n + 1):
-                if i != j:
-                    x[i, j] = self.model.addVar(vtype="B", name="x(%s,%s)" % (i, j))
-                    if i == 1:
-                        f[i, j] = self.model.addVar(
-                            lb=0, ub=n - 1, vtype="C", name="f(%s,%s)" % (i, j)
-                        )
-                    else:
-                        f[i, j] = self.model.addVar(
-                            lb=0, ub=n - 2, vtype="C", name="f(%s,%s)" % (i, j)
-                        )
+
+        x = self.model.addVars(
+            [(i, j) for i in range(1, n + 1) for j in range(1, n + 1) if i != j],
+            vtype="B", name="x"
+        )
+
+        f = {}
+        for i, j in x.keys():
+            ub = n - 1 if i == 1 else n - 2
+            f[i, j] = self.model.addVar(lb=0, ub=ub, vtype="C", name=f"f({i},{j})")
+
         self.model.update()
 
         for i in range(1, n + 1):
@@ -420,7 +408,8 @@ class TSP:
         self.model._time_limit = time_limit
 
         # 実行
-        self.model.optimize(callback(time_limit=time_limit, target_obj=target_obj, time_points=time_points, obj_log=obj_log))
+        cb = callback(time_limit=time_limit, target_obj=target_obj, time_points=time_points, obj_log=obj_log)
+        self.model.optimize(cb)
 
         # 結果の取得
         if self.model.SolCount > 0:
