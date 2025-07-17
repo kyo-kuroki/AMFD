@@ -30,23 +30,34 @@ def callback(time_limit=None, target_obj=None, time_points=None, obj_log=None):
                 return
 
             # 指定時刻での記録
-            if obj_log is not None and where == gp.GRB.Callback.MIPSOL:
-                for t in time_points:
-                    if t not in recorded and runtime >= t:
-                        try:
-                            # obj = model.cbGet(gp.GRB.Callback.MIP_OBJBST)
-                            obj = model.cbGet(gp.GRB.Callback.MIPSOL_OBJ)
+            # if obj_log is not None and where == gp.GRB.Callback.MIPSOL:
+            #     for t in time_points:
+            #         if t not in recorded and runtime >= t:
+            #             try:
+            #                 # obj = model.cbGet(gp.GRB.Callback.MIP_OBJBST)
+            #                 obj = model.cbGet(gp.GRB.Callback.MIPSOL_OBJ)
                             
-                            if obj != float('inf'):
-                                # 解（変数名→値）の辞書を取得
-                                # solution = {v.VarName: model.cbGetSolution(v) for v in model.getVars()}
-                                vars = model.getVars()
-                                solution = [model.cbGetSolution(v) for v in vars]
-                                obj_log.append((t, obj, solution))
-                                recorded.add(t)
-                                print(f"[{runtime:.2f}s] {t:.1f} 秒で目的関数: {obj}")
-                        except gp.GurobiError as e:
-                             print(f"[{runtime:.2f}s] 解の取得エラー: {e}")
+            #                 if obj != float('inf'):
+            #                     # 解（変数名→値）の辞書を取得
+            #                     # solution = {v.VarName: model.cbGetSolution(v) for v in model.getVars()}
+            #                     vars = model.getVars()
+            #                     solution = [model.cbGetSolution(v) for v in vars]
+            #                     obj_log.append((t, obj, solution))
+            #                     recorded.add(t)
+            #                     print(f"[{runtime:.2f}s] {t:.1f} 秒で目的関数: {obj}")
+            #             except gp.GurobiError as e:
+            #                  print(f"[{runtime:.2f}s] 解の取得エラー: {e}")
+
+            if obj_log is not None and where == gp.GRB.Callback.MIPSOL:
+                try:
+                    obj = model.cbGet(gp.GRB.Callback.MIPSOL_OBJ)
+                    if obj != float('inf'):
+                        vars = model.getVars()
+                        solution = [model.cbGetSolution(v) for v in vars]
+                        obj_log.append((runtime, obj, solution))
+                        print(f"[{runtime:.2f}s] 解を記録: 目的関数 = {obj}")
+                except gp.GurobiError as e:
+                    print(f"[{runtime:.2f}s] 解の取得エラー: {e}")
 
         # 目標値による打ち切り（MIPSOL時のみ）
         if target_obj is not None and where == gp.GRB.Callback.MIPSOL:
@@ -574,7 +585,7 @@ class MISP:
             x[i] = self.model.addVar(vtype=GRB.BINARY, name=f"x[{i}]")
         # 目的関数の定義
         self.model.setObjective(-quicksum(x[i] for i in range(N)), GRB.MINIMIZE)
-        E = 1 - self.Eij # 補グラフで考える
+        E = self.Eij
         # 制約の定義
         for i in range(N):
             for j in range(i+1, N):
@@ -615,7 +626,7 @@ class MISP:
         # 制約の定義
         for i in range(N):
             for j in range(i+1, N):
-                if 1 - self.Eij[i, j] != 0: # 補グラフ
+                if self.Eij[i, j] != 0: 
                     self.model.addConstr(x[i] * x[j] == 0)
 
         # パラメータ設定

@@ -74,7 +74,11 @@ class TSP():
         self.to_device(org_device)
 
         return torch.reshape(h, (N*N, )), torch.reshape(Q, ((N) * (N), (N) * (N)))
-
+    
+    def get_const(self):
+        x = torch.zeros((self.num_city-1, self.num_city-1), device=self.d.device)
+        const = self.generator(x)
+        return const
 
     
     
@@ -217,7 +221,10 @@ class QAP():
         self.to_device(org_device)
         return h.reshape(N * N), Q.reshape(N * N, N * N)
 
-
+    def get_const(self):
+        x = torch.zeros((self.city_num, self.city_num), device=self.d.device)
+        const = self.generator(x)
+        return const
 
 
     def draw_graph(self, x, city_prefix="C", factory_prefix="F"):
@@ -348,6 +355,12 @@ class GCP():
 
         self.to_device(org_device)
         return h.detach(), Q.detach()
+    
+    def get_const(self):
+        x = torch.zeros((self.num_node, self.num_color), device=self.E.device)
+        y = torch.zeros((self.num_color,), device=self.E.device)
+        const = self.generator(x, y)
+        return const
 
 
     
@@ -451,6 +464,11 @@ class MISP():
 
         return h.detach(), Q.detach()
     
+    def get_const(self):
+        x = torch.zeros((self.num_node, ), device=self.E.device)
+        const = self.generator(x)
+        return const
+    
     def draw_independent_set(self, x: torch.Tensor):
         """
         Args:
@@ -499,6 +517,7 @@ class MCP():
     def __init__(self, graph, device='cuda'):
         self.device = device
         self.graph = graph.to(device)  # [N, N] symmetric adjacency matrix
+        self.num_node = self.graph.shape[0]
 
     def generator(self, x: torch.Tensor):
         """
@@ -541,6 +560,11 @@ class MCP():
         self.to_device(org_device)
 
         return h.detach(), Q.detach()
+    
+    def get_const(self):
+        x = torch.zeros((self.num_node, ), device=self.graph.device)
+        const = self.generator(x)
+        return const
     
     
 

@@ -7,7 +7,7 @@ import torch
 
 
 
-def get_qubo(f, arg_shapes, device='cuda:0'):
+def get_qubo(f, arg_shapes, device='cuda:0', build_qubo=None):
     device = device if torch.cuda.is_available() else 'cpu'
 
     # 引数名の取得
@@ -32,33 +32,35 @@ def get_qubo(f, arg_shapes, device='cuda:0'):
             flat_index += 1
     output = f(*vars)
     const = output.item()
-    grads = torch.autograd.grad(output, vars, create_graph=True)
-    h = torch.cat([g.reshape(-1) for g in grads])
+    if build_qubo is None:
+        grads = torch.autograd.grad(output, vars, create_graph=True)
+        h = torch.cat([g.reshape(-1) for g in grads])
 
-    try:
-        # 全変数を1ベクトルとして扱う
-        v = torch.cat([(v).reshape(-1) for v in vars]) 
+        try:
+            # 全変数を1ベクトルとして扱う
+            v = torch.cat([(v).reshape(-1) for v in vars]) 
 
-        # flat_f: 1次元ベクトルを元に戻して関数を評価
-        def flat_f(v_flat):
-            split = torch.split(v_flat, split_sizes)
-            reshaped = [s.view(arg_shapes[name]) for s, name in zip(split, arg_names)]
-            return f(*reshaped)
+            # flat_f: 1次元ベクトルを元に戻して関数を評価
+            def flat_f(v_flat):
+                split = torch.split(v_flat, split_sizes)
+                reshaped = [s.view(arg_shapes[name]) for s, name in zip(split, arg_names)]
+                return f(*reshaped)
 
-        # ヘッセ行列（要素数 n の変数に対して n×n）
-        Q = torch.func.hessian(flat_f)(v).detach().clone()
-    except Exception as e:
-        print(f"making hessian serially due to : {e}")
-        def rowwise_hesse(h):
-            Q_rows = []
-            for i in range(h.numel()):
-                grad_i = torch.autograd.grad(h[i], vars, retain_graph=True)
-                Q_rows.append(torch.cat([g.reshape(-1) for g in grad_i]).detach())
-            return torch.stack(Q_rows).detach() 
-        Q = rowwise_hesse(h).requires_grad_(False)
+            # ヘッセ行列（要素数 n の変数に対して n×n）
+            Q = torch.func.hessian(flat_f)(v).detach().clone()
+        except Exception as e:
+            print(f"making hessian serially due to : {e}")
+            def rowwise_hesse(h):
+                Q_rows = []
+                for i in range(h.numel()):
+                    grad_i = torch.autograd.grad(h[i], vars, retain_graph=True)
+                    Q_rows.append(torch.cat([g.reshape(-1) for g in grad_i]).detach())
+                return torch.stack(Q_rows).detach() 
+            Q = rowwise_hesse(h).requires_grad_(False)
 
-    h = h + torch.diagonal(0.5 * Q)
-    Q.fill_diagonal_(0)
+        h = h + torch.diagonal(0.5 * Q)
+        Q.fill_diagonal_(0)
+    else: h, Q = build_qubo(device=device)
 
     return {
         'const': const,
