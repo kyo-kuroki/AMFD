@@ -544,3 +544,60 @@ def amfd_multi_gpu(const, h, Q, t_st=0.4, t_en=0.01, Nstep=None, rep_num=4,
 
 
 
+def split_qubo(Q, h, x_full, n):
+    """
+    QUBOをn分割して部分問題を作成する（x_fullによって変数を固定）。
+
+    Args:
+        Q (Tensor): (N, N) 対称なQUBO二次係数行列
+        h (Tensor): (N,) 一次係数ベクトル
+        x_full (Tensor): (N,) 全変数に対して固定値 (0 or 1)
+        n (int): 分割数
+
+    Returns:
+        List of (Q_sub, h_sub, offset_sub): 各部分問題（自由変数のみ）を表すタプル
+    """
+    def fix_variables(Q, h, fixed_dict):
+        n = Q.shape[0]
+        device = Q.device
+
+        fixed_indices = torch.tensor(sorted(fixed_dict.keys()), device=device)
+        fixed_values = torch.tensor([fixed_dict[i] for i in fixed_indices.tolist()], dtype=Q.dtype, device=device)
+
+        mask = torch.ones(n, dtype=torch.bool, device=device)
+        mask[fixed_indices] = False
+
+        Q_sub = Q[mask][:, mask]
+        h_sub = h[mask] + Q[mask][:, ~mask] @ fixed_values
+
+        h_fixed = h[~mask]
+        Q_fixed = Q[~mask][:, ~mask]
+        offset = (h_fixed @ fixed_values).item() + 0.5 * (fixed_values @ (Q_fixed @ fixed_values)).item()
+
+        return Q_sub, h_sub, offset
+
+    N = Q.shape[0]
+    assert x_full.shape[0] == N
+
+    # 分割サイズ（均等に）
+    base = N // n
+    extras = N % n
+    sizes = [base + (1 if i < extras else 0) for i in range(n)]
+
+    # インデックス分割
+    split_indices = []
+    start = 0
+    for size in sizes:
+        split_indices.append(list(range(start, start + size)))
+        start += size
+
+    # 各部分問題の生成
+    subproblems = []
+    for idx_keep in split_indices:
+        idx_keep_set = set(idx_keep)
+        fixed_dict = {i: int(x_full[i].item()) for i in range(N) if i not in idx_keep_set}
+        Q_sub, h_sub, offset_sub = fix_variables(Q, h, fixed_dict)
+        subproblems.append((Q_sub, h_sub, offset_sub))
+
+    return subproblems
+

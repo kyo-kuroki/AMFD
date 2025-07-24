@@ -362,7 +362,9 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     val = sample.num_color
     b_sols, b_vals, b_etas, b_zetas = {}, {}, {}, {}
     i = 0
-    while b_val > val or valid:
+    valid = True
+    results = []
+    while b_val > val and valid:
         b_val = copy.copy(val)
         sols, vals, etas, zetas = b_sols, b_vals, b_etas, b_zetas
         squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo) 
@@ -371,9 +373,10 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
         sample = gn.GCP(graph, coeff1=1, coeff2=1, coeff3=1, num_color=int(min(val, b_val)-1), device=device)
         shapes = [torch.Size([num_nodes, sample.num_color]), torch.Size([sample.num_color])]
         squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=sample.build_qubo)
-        valid, idx = check_gcp_constraint(b_sols[0], graph)
-        print(valid)
         i += 1
+        mid_time = time.time()
+        valid, idx = check_gcp_constraint(b_sols[0], graph)
+        results.append({'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(mid_time-start_time,5), 'value': round((b_sols[0][idx].sum(dim=0) > 1e-3).sum().item(), 1), 'eta':round(b_etas[idx].item(),5), 'zeta':round(b_zetas[idx].item(),5), 'constraint satisfaction': valid, 'constraint coeff':1})
     if i == 1:
         sols, vals, etas, zetas = b_sols, b_vals, b_etas, b_zetas
     tuning_end_time = time.time()
@@ -392,7 +395,7 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     # 結果の確認
     tuning_is_valid, tuning_valid_index = check_gcp_constraint(sols=sols[0], graph=graph)
     tuning_color = round((sols[0][tuning_valid_index].sum(dim=0) > 1e-3).sum().item(), 1)
-    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': tuning_color, 'eta':round(etas[tuning_valid_index].item(),5), 'zeta':round(zetas[tuning_valid_index].item(),5), 'constraint satisfaction': tuning_is_valid, 'constraint coeff':1}
+    results.append({'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': tuning_color, 'eta':round(etas[tuning_valid_index].item(),5), 'zeta':round(zetas[tuning_valid_index].item(),5), 'constraint satisfaction': tuning_is_valid, 'constraint coeff':1})
 
     post_is_valid, post_valid_index = check_gcp_constraint(sols=tuned_sols[0], graph=graph)
     if post_is_valid: # 制約充足解が発見されなかった場合
@@ -408,9 +411,9 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     else:
         best_sol, best_val, best_eta, best_zeta = tuned_sols, tuned_vals, tuned_etas, tuned_zetas
 
-    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': tuned_color, 'eta':round(best_eta[post_valid_index].item(),5), 'zeta':round(best_zeta[post_valid_index].item(),5), 'constraint satisfaction': post_is_valid or tuning_is_valid, 'constraint coeff':1}
+    results.append({'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': tuned_color, 'eta':round(best_eta[post_valid_index].item(),5), 'zeta':round(best_zeta[post_valid_index].item(),5), 'constraint satisfaction': post_is_valid or tuning_is_valid, 'constraint coeff':1})
 
-    return tuning_result , tuned_result
+    return results
 
 
 def eval_all_tsp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/tsp')):
@@ -598,7 +601,7 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
             print(f"Evaluating {file} ...")
             torch.manual_seed(seed)
             # 評価実行
-            tuning_result, tuned_result = eval_gcp(
+            result = eval_gcp(
                 instance=instance,
                 k=k,
                 genetic=genetic,
@@ -606,9 +609,7 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
                 tuning_step_scale=tuning_step_scale,
                 device=device
             )
-            results += [tuning_result, tuned_result]
-            print("Tuning Result:", tuning_result)
-            print("Tuned Result:", tuned_result)
+            results += result
             print("-" * 60)
             df = pd.DataFrame(results)
             target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
@@ -624,41 +625,41 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     device = 'cuda:0'
 
-    eval_all_tsp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
-    )
+    # eval_all_tsp(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )
 
-    eval_all_qap(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
-    )
+    # eval_all_qap(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )
 
-    eval_all_misp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
-    )
+    # eval_all_misp(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )
 
-    eval_all_mcp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
-    )   
+    # eval_all_mcp(
+    #     k=5,
+    #     genetic=True,
+    #     tuning_step_scale=2,
+    #     step_scales=[2, 5, 10, 20, 50],
+    #     device=device,
+    #     seed=seed
+    # )   
 
     eval_all_gcp(
         k=5,

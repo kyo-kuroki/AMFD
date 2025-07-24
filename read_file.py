@@ -27,31 +27,31 @@ class QAP:
         while line_idx < len(lines) and not lines[line_idx].strip():
             line_idx += 1
 
-        F_data = []
+        D_data = []
         while line_idx < len(lines):
             line = lines[line_idx].strip()
             if not line: 
                 line_idx += 1
                 break
-            F_data.extend([int(x) for x in line.split()])
+            D_data.extend([int(x) for x in line.split()])
             line_idx += 1
 
-        if len(F_data) != n * n:
+        if len(D_data) != n * n:
             raise ValueError(f"flow matrix shape is wrong")
-        self.Fij = np.array(F_data, dtype=int).reshape((n, n))
+        self.Dij = np.array(D_data, dtype=int).reshape((n, n))
 
-        D_data = []
+        F_data = []
         while line_idx < len(lines):
             line = lines[line_idx].strip()
             if not line:
                 line_idx += 1
                 continue
-            D_data.extend([int(x) for x in line.split()])
+            F_data.extend([int(x) for x in line.split()])
             line_idx += 1
 
-        if len(D_data) != n * n:
+        if len(F_data) != n * n:
             raise ValueError(f"distance matrix shape is wrong")
-        self.Dij = np.array(D_data, dtype=int).reshape((n, n))
+        self.Fij = np.array(F_data, dtype=int).reshape((n, n))
         return self.Fij, self.Dij
     
 

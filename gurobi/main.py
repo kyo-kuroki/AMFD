@@ -88,7 +88,7 @@ def eval_qap(instance, time_limit=60, target_obj=None, time_points=None, thread_
 
     # QUBO solver
     sample = gn.QAP(torch.from_numpy(flows).float(), torch.from_numpy(dists).float(), coeff1=1, coeff2=1, device=device)
-    qubo, meta = md.get_qubo(sample.generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device=device, build_qubo=sample.build_qubo)
+    qubo, meta = md.get_qubo(sample.generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device=device)#, build_qubo=sample.build_qubo)
     best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=[])
     for t, obj, sol in obj_log:
         sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
@@ -166,7 +166,7 @@ def eval_mcp(instance, time_limit=60, target_obj=None, time_points=None, thread_
 
 def check_gcp_constraint(sols, graph):
     if sols.ndim == 2:
-        sols.unsqueeze(0)
+        sols = sols.unsqueeze(0)
     zero = torch.tensor(0.0, device=sols.device)
     graph_expanded = graph.unsqueeze(0)  # shape: [1, N, N]
 
@@ -190,6 +190,7 @@ def check_gcp_constraint(sols, graph):
     is_valid = valid_mask.any().item()
 
     return is_valid
+
 
 def eval_gcp(instance, time_limit=60, target_obj=None, time_points=None, thread_num=8, device='cpu'):
 
@@ -227,8 +228,8 @@ def eval_all_tsp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
     files = [f for f in os.listdir(datasets_dir) if f.endswith('.tsp')]
 
     results = []
-    for tsp_file in sorted(files):
-        instance = os.path.join(datasets_dir, tsp_file)
+    for file in sorted(files):
+        instance = os.path.join(datasets_dir, file)
         amfd_res = get_amfd_result(csv_file=os.path.join(amfd_results_dir, 'tsp_results.csv'), instance_name=Path(instance).stem)
         time_points = [t for t, v, best in amfd_res]
         best_known = amfd_res[-1][-1]
@@ -241,8 +242,8 @@ def eval_all_qap(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
     files = [f for f in os.listdir(datasets_dir) if f.endswith('.qap')]
 
     results = []
-    for tsp_file in sorted(files):
-        instance = os.path.join(datasets_dir, tsp_file)
+    for file in sorted(files):
+        instance = os.path.join(datasets_dir, file)
         amfd_res = get_amfd_result(csv_file=os.path.join(amfd_results_dir, 'qap_results.csv'), instance_name=Path(instance).stem)
         time_points = [t for t, v, best in amfd_res]
         best_known = amfd_res[-1][-1]
@@ -252,12 +253,62 @@ def eval_all_qap(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
         pd.DataFrame(results).to_csv(os.path.dirname(__file__)+'/results/qap_results.csv')
         print("-" * 60)
 
+
+
+
+# def eval_all_qap(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
+#     files = [f for f in os.listdir(datasets_dir) if f.endswith('.qap')]
+
+#     output_path = os.path.join(os.path.dirname(__file__), 'results', 'qap_results.csv')
+#     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+#     # 現在の最大インデックスを確認（なければ -1）
+#     if os.path.exists(output_path):
+#         existing_df = pd.read_csv(output_path, index_col=0)
+#         current_index = existing_df.index.max()
+#     else:
+#         current_index = -1
+
+#     for file in sorted(files):
+#         instance = os.path.join(datasets_dir, file)
+#         stem = Path(instance).stem
+#         if ('tai' in stem or 'tho' in stem or 'wil' in stem) and not any(x in stem for x in ['tai100', 'tai150']):
+#             print(stem)
+#             amfd_res = get_amfd_result(
+#                 csv_file=os.path.join(amfd_results_dir, 'qap_results.csv'),
+#                 instance_name=stem
+#             )
+#             time_points = [t for t, v, best in amfd_res]
+#             best_known = amfd_res[-1][-1]
+
+#             # 評価実行
+#             results = eval_qap(
+#                 instance,
+#                 time_limit=2*time_points[-1],
+#                 target_obj=best_known,
+#                 time_points=time_points,
+#                 thread_num=thread_num,
+#                 device=device
+#             )
+
+#             # DataFrame に変換し、インデックスを連番の続きに設定
+#             df = pd.DataFrame(results)
+#             df.index = range(current_index + 1, current_index + 1 + len(df))
+#             current_index += len(df)
+
+#             # ヘッダーは最初だけ
+#             header = not os.path.exists(output_path)
+#             df.to_csv(output_path, mode='a', header=header, index=True)
+#             print("-" * 60)
+
+
+
 def eval_all_misp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
     files = [f for f in os.listdir(datasets_dir) if f.endswith('.clq')]
 
     results = []
-    for tsp_file in sorted(files):
-        instance = os.path.join(datasets_dir, tsp_file)
+    for file in sorted(files):
+        instance = os.path.join(datasets_dir, file)
         amfd_res = get_amfd_result(csv_file=os.path.join(amfd_results_dir, 'misp_results.csv'), instance_name=Path(instance).stem)
         time_points = [t for t, v, best in amfd_res]
         best_known = -amfd_res[-1][-1]
@@ -271,8 +322,8 @@ def eval_all_mcp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
     files = [f for f in os.listdir(datasets_dir) if f.endswith('.mcp')]
 
     results = []
-    for tsp_file in sorted(files):
-        instance = os.path.join(datasets_dir, tsp_file)
+    for file in sorted(files):
+        instance = os.path.join(datasets_dir, file)
         amfd_res = get_amfd_result(csv_file=os.path.join(amfd_results_dir, 'mcp_results.csv'), instance_name=Path(instance).stem)
         time_points = [t for t, v, best in amfd_res]
         best_known = -amfd_res[-1][-1]
@@ -286,8 +337,8 @@ def eval_all_gcp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
     files = [f for f in os.listdir(datasets_dir) if f.endswith('.col')]
 
     results = []
-    for tsp_file in sorted(files):
-        instance = os.path.join(datasets_dir, tsp_file)
+    for file in sorted(files):
+        instance = os.path.join(datasets_dir, file)
         amfd_res = get_amfd_result(csv_file=os.path.join(amfd_results_dir, 'gcp_results.csv'), instance_name=Path(instance).stem)
         time_points = [t for t, v, best in amfd_res]
         best_known = amfd_res[-1][-1]
@@ -298,15 +349,19 @@ def eval_all_gcp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
         print("-" * 60)
 
 
+
+
 if __name__ == "__main__":
     datasets_dir = os.path.dirname(os.path.dirname(__file__)) + '/datasets'
     amfd_results_dir = os.path.dirname(os.path.dirname(__file__)) + '/fix'
     thread_num = 256
 
+    # eval_gcp(instance='/work2/k-kuroki/AMFD/datasets/gcp/anna.col', time_limit=10, target_obj=11, time_points=[], thread_num=256, device='cpu')
+
     # eval_all_tsp(datasets_dir=datasets_dir + '/tsp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
-    # eval_all_qap(datasets_dir=datasets_dir + '/qap', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
+    eval_all_qap(datasets_dir=datasets_dir + '/qap', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
     # eval_all_misp(datasets_dir=datasets_dir + '/misp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
-    eval_all_mcp(datasets_dir=datasets_dir + '/mcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
+    # eval_all_mcp(datasets_dir=datasets_dir + '/mcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
     # eval_all_gcp(datasets_dir=datasets_dir + '/gcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
 
 

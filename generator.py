@@ -549,7 +549,7 @@ class MCP():
         org_device = W.device
         self.to_device(device)
 
-        Q = W.clone()  # x_i x_j の係数は W_ij
+        Q = 2 * W.clone()  # x_i x_j の係数は W_ij
         h = -torch.sum(W, dim=1)  # x_i の係数は -sum_j W_ij
 
         # 対角成分を h に吸収

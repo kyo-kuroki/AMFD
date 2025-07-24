@@ -158,22 +158,51 @@ class QAP:
                 x[i, j] = self.model.addVar(vtype=GRB.BINARY, name=f"x[{i},{j}]")
         # 目的関数の定義
 
+        # Q = QuadExpr()
+        # terms = []
+        # vars1 = []
+        # vars2 = []
+
+        # for i in tqdm.tqdm(range(N)):
+        #     for j in range(N):
+        #         fij = self.Fij[i, j]
+        #         for k in range(N):
+        #             for l in range(N):
+        #                 coef = fij * self.Dij[k, l]
+        #                 terms.append(coef)
+        #                 vars1.append(x[i, k])
+        #                 vars2.append(x[j, l])
+
+        # Q.addTerms(terms, vars1, vars2)
+        # self.model.setObjective(Q, GRB.MINIMIZE)
+
+        F = self.Fij  # shape: (N, N)
+        D = self.Dij  # shape: (N, N)
+
+        # Gurobi変数x[i,k]をNumPy配列に変換（既に定義されていると仮定）
+        x_array = np.array([[x[i, k] for k in range(N)] for i in range(N)])
+
+        # 外積で係数テンソルを構築
+        # F[i,j] * D[k,l] → einsumで (i,j,k,l) tensor
+        coef_tensor = np.einsum('ij,kl->ijkl', F, D)
+
+        # 変数ペア x[i,k], x[j,l] →同様にインデックス展開
+        terms = coef_tensor.flatten()
+
+        # 各軸のインデックス展開
+        I, J, K, L = np.meshgrid(
+            np.arange(N), np.arange(N), np.arange(N), np.arange(N),
+            indexing='ij'
+        )
+
+        # 対応するGurobi変数を展開
+        vars1 = x_array[I.flatten(), K.flatten()]
+        vars2 = x_array[J.flatten(), L.flatten()]
+
+
+        # 目的関数作成
         Q = QuadExpr()
-        terms = []
-        vars1 = []
-        vars2 = []
-
-        for i in tqdm.tqdm(range(N)):
-            for j in range(N):
-                fij = self.Fij[i, j]
-                for k in range(N):
-                    for l in range(N):
-                        coef = fij * self.Dij[k, l]
-                        terms.append(coef)
-                        vars1.append(x[i, k])
-                        vars2.append(x[j, l])
-
-        Q.addTerms(terms, vars1, vars2)
+        Q.addTerms(terms, vars1.tolist(), vars2.tolist())
         self.model.setObjective(Q, GRB.MINIMIZE)
 
         # 制約の定義

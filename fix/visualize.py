@@ -4,7 +4,7 @@ import os
 import math
 
 # 入力CSVファイル名（適宜変更）
-prb = 'gcp'
+prb = 'mcp'
 input_csv = os.path.dirname(os.path.dirname(__file__)) + '/amfd/results_k5/{}_results.csv'.format(prb)
 output_csv = os.path.dirname(__file__) + '/{}_results.csv'.format(prb)
 output_plot_dir = os.path.dirname(__file__) + '/plots'
@@ -13,14 +13,22 @@ solutions_file = os.path.dirname(os.path.dirname(__file__)) +'/datasets/{}/solut
 
 # CSV読み込み
 df = pd.read_csv(input_csv)
+# 0. constraint satisfaction がTrueのデータのみ抽出
+df = df[df['constraint satisfaction'] == True]
 
 # 1. tuningの行をinstanceごとに1つだけ残す
-tuning_df = df[df['process'] == 'tuning'].drop_duplicates(subset='instance')
+# tuning_df = df[df['process'] == 'tuning'].drop_duplicates(subset='instance')
+tuning_df = (
+    df[df['process'] == 'tuning']  # tuning のみ
+    .sort_values(by=['value', 'time'])  # value 昇順 → 同値なら time 昇順
+    .drop_duplicates(subset='instance', keep='first')  # instance ごとに最初の1件
+)
 non_tuning_df = df[df['process'] != 'tuning']
 df_filtered = pd.concat([tuning_df, non_tuning_df], ignore_index=True)
 
 # 2. constraint satisfactionがFalseの行のvalue, eta, zetaをNoneにする
 df_filtered = df_filtered[df_filtered['step_scale'] != 1]
+
 
 # 3. best known solutionを読み込み、instance列でマージ
 
