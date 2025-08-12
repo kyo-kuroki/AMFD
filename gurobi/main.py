@@ -256,51 +256,6 @@ def eval_all_qap(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
 
 
 
-# def eval_all_qap(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
-#     files = [f for f in os.listdir(datasets_dir) if f.endswith('.qap')]
-
-#     output_path = os.path.join(os.path.dirname(__file__), 'results', 'qap_results.csv')
-#     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-#     # 現在の最大インデックスを確認（なければ -1）
-#     if os.path.exists(output_path):
-#         existing_df = pd.read_csv(output_path, index_col=0)
-#         current_index = existing_df.index.max()
-#     else:
-#         current_index = -1
-
-#     for file in sorted(files):
-#         instance = os.path.join(datasets_dir, file)
-#         stem = Path(instance).stem
-#         if ('tai' in stem or 'tho' in stem or 'wil' in stem) and not any(x in stem for x in ['tai100', 'tai150']):
-#             print(stem)
-#             amfd_res = get_amfd_result(
-#                 csv_file=os.path.join(amfd_results_dir, 'qap_results.csv'),
-#                 instance_name=stem
-#             )
-#             time_points = [t for t, v, best in amfd_res]
-#             best_known = amfd_res[-1][-1]
-
-#             # 評価実行
-#             results = eval_qap(
-#                 instance,
-#                 time_limit=2*time_points[-1],
-#                 target_obj=best_known,
-#                 time_points=time_points,
-#                 thread_num=thread_num,
-#                 device=device
-#             )
-
-#             # DataFrame に変換し、インデックスを連番の続きに設定
-#             df = pd.DataFrame(results)
-#             df.index = range(current_index + 1, current_index + 1 + len(df))
-#             current_index += len(df)
-
-#             # ヘッダーは最初だけ
-#             header = not os.path.exists(output_path)
-#             df.to_csv(output_path, mode='a', header=header, index=True)
-#             print("-" * 60)
-
 
 
 def eval_all_misp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):

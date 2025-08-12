@@ -4,7 +4,7 @@ import os
 import math
 
 # 入力CSVファイル名（適宜変更）
-prb = 'mcp'
+prb = 'tsp'
 input_csv = os.path.dirname(os.path.dirname(__file__)) + '/amfd/results_k5/{}_results.csv'.format(prb)
 output_csv = os.path.dirname(__file__) + '/{}_results.csv'.format(prb)
 output_plot_dir = os.path.dirname(__file__) + '/plots'
@@ -15,6 +15,8 @@ solutions_file = os.path.dirname(os.path.dirname(__file__)) +'/datasets/{}/solut
 df = pd.read_csv(input_csv)
 # 0. constraint satisfaction がTrueのデータのみ抽出
 df = df[df['constraint satisfaction'] == True]
+
+
 
 # 1. tuningの行をinstanceごとに1つだけ残す
 # tuning_df = df[df['process'] == 'tuning'].drop_duplicates(subset='instance')
@@ -46,8 +48,20 @@ solution_series.index.name = 'instance'
 
 # instance列でマージ
 df_filtered = df_filtered.merge(solution_series, on='instance', how='left')
-df_filtered.sort_values(by='instance', inplace=True, kind='stable')
+
+import re
+
+# ナチュラルソートのためのキー関数
+def natural_key(s):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+
+# instance列でナチュラルソート
+df_filtered['instance_sort_key'] = df_filtered['instance'].apply(natural_key)
+df_filtered.sort_values(by='instance_sort_key', inplace=True, kind='stable')
+df_filtered.drop(columns='instance_sort_key', inplace=True)
 df_filtered.reset_index(drop=True, inplace=True)
+df_filtered['value'] = df_filtered['value'].abs()
+
 
 # 4. 処理後のCSVを保存
 df_filtered.to_csv(output_csv, index=False)

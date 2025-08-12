@@ -5,7 +5,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, os.pardir))
 sys.path.append(parent_dir)
 import read_file as rf
-import optimizer as op
+import amfd_optimizer as op
 import generator as gn
 import torch
 import math
@@ -269,7 +269,7 @@ def eval_mcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     graph = torch.from_numpy(rf.MCP().read_file(instance)).float()
     num_nodes = graph.shape[0]
 
-    # MISPの定式化を呼び出し(coeffは制約係数: defaultは平均最大距離の1倍)
+    # MCPの定式化を呼び出し
     sample = gn.MCP(graph, device=device)
     shapes = [torch.Size([num_nodes])]
     # pre compile
@@ -625,41 +625,41 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     device = 'cuda:0'
 
-    # eval_all_tsp(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )
+    eval_all_tsp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )
 
-    # eval_all_qap(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )
+    eval_all_qap(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )
 
-    # eval_all_misp(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )
+    eval_all_misp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )
 
-    # eval_all_mcp(
-    #     k=5,
-    #     genetic=True,
-    #     tuning_step_scale=2,
-    #     step_scales=[2, 5, 10, 20, 50],
-    #     device=device,
-    #     seed=seed
-    # )   
+    eval_all_mcp(
+        k=5,
+        genetic=True,
+        tuning_step_scale=2,
+        step_scales=[2, 5, 10, 20, 50],
+        device=device,
+        seed=seed
+    )   
 
     eval_all_gcp(
         k=5,
