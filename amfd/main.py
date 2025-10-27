@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 import pandas as pd
 import copy
+import argparse
 
 
 def get_top_k(solutions, results, eta, zeta, k=5):
@@ -618,56 +619,74 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
 
 
 
+def get_args():
+    parser = argparse.ArgumentParser(description="Genetic optimization settings")
+
+    parser.add_argument("--k", type=int, default=5, help="Number of top candidates (default: 5)")
+    parser.add_argument("--genetic", type=bool, default=True)
+    parser.add_argument("--tuning_step_scale", type=float, default=2, help="Base tuning step scale (default: 2)")
+    parser.add_argument(
+        "--step_scales", 
+        type=float, 
+        nargs="+", 
+        default=[2, 5, 10, 20, 50],
+        help="List of step scales (default: [2, 5, 10, 20, 50])"
+    )
+    parser.add_argument("--device", type=str, default="cuda:0", help="Device to use (default: cuda:0)")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
+
+    args = parser.parse_args()
+    return args
 
 if __name__ == "__main__":
-    # 再現性のためのシード固定
-    seed = 0
-    torch.manual_seed(seed)
-    device = 'cuda:0'
+    args = get_args()
+
+    torch.manual_seed(args.seed)
+
 
     eval_all_tsp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
+        k=args.k,
+        genetic=args.genetic,
+        tuning_step_scale=args.tuning_step_scale,
+        step_scales=args.step_scales,
+        device=args.device,
+        seed=args.seed
     )
 
     eval_all_qap(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
+        k=args.k,
+        genetic=args.genetic,
+        tuning_step_scale=args.tuning_step_scale,
+        step_scales=args.step_scales,
+        device=args.device,
+        seed=args.seed
     )
 
     eval_all_misp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
+        k=args.k,
+        genetic=args.genetic,
+        tuning_step_scale=args.tuning_step_scale,
+        step_scales=args.step_scales,
+        device=args.device,
+        seed=args.seed
     )
 
     eval_all_mcp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
+        k=args.k,
+        genetic=args.genetic,
+        tuning_step_scale=args.tuning_step_scale,
+        step_scales=args.step_scales,
+        device=args.device,
+        seed=args.seed
     )   
 
     eval_all_gcp(
-        k=5,
-        genetic=True,
-        tuning_step_scale=2,
-        step_scales=[2, 5, 10, 20, 50],
-        device=device,
-        seed=seed
+        k=args.k,
+        genetic=args.genetic,
+        tuning_step_scale=args.tuning_step_scale,
+        step_scales=args.step_scales,
+        device=args.device,
+        seed=args.seed
     )
 
 
