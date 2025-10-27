@@ -12,7 +12,7 @@ This repository provides a **PyTorch implementation** of the **Annealed Mean-Fie
 .
 ├── generator.py       # Functions for QUBO formulation of representative problems
 ├── mediator.py        # Conversion between formulated functions and QUBO matrices / solution reconstruction
-├── read_file.py       # AMFD (Approximate Minimization via Fast Descent) optimization algorithm
+├── read_file.py       # AMFD optimization algorithm
 ├── datasets
 │       ├── gcp
 │       ├── mcp
