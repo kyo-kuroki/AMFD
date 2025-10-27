@@ -620,7 +620,7 @@ def eval_all_gcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description="Genetic optimization settings")
+    parser = argparse.ArgumentParser(description="optimization settings")
 
     parser.add_argument("--k", type=int, default=5, help="Number of top candidates (default: 5)")
     parser.add_argument("--genetic", type=bool, default=True)

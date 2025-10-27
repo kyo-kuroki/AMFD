@@ -9,7 +9,7 @@ import torch
 from pathlib import Path
 import pandas as pd
 import gurobi_optimizer as go
-
+import argparse
 
 
 def get_amfd_result(csv_file, instance_name):
@@ -304,20 +304,24 @@ def eval_all_gcp(datasets_dir, amfd_results_dir, thread_num, device='cpu'):
         print("-" * 60)
 
 
+def get_args():
+    parser = argparse.ArgumentParser(description="optimization settings")
+    parser.add_argument("--thread_num", type=int, default=256, help="Number of top candidates (default: 256)")
+    args = parser.parse_args()
+    return args
 
 
 if __name__ == "__main__":
     datasets_dir = os.path.dirname(os.path.dirname(__file__)) + '/datasets'
-    amfd_results_dir = os.path.dirname(os.path.dirname(__file__)) + '/fix'
-    thread_num = 256
+    amfd_results_dir = os.path.dirname(os.path.dirname(__file__)) + '/aggregation'
+    args = get_args()
+    thread_num = args.thread_num
 
-    # eval_gcp(instance='/work2/k-kuroki/AMFD/datasets/gcp/anna.col', time_limit=10, target_obj=11, time_points=[], thread_num=256, device='cpu')
-
-    # eval_all_tsp(datasets_dir=datasets_dir + '/tsp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
+    eval_all_tsp(datasets_dir=datasets_dir + '/tsp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
     eval_all_qap(datasets_dir=datasets_dir + '/qap', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
-    # eval_all_misp(datasets_dir=datasets_dir + '/misp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
-    # eval_all_mcp(datasets_dir=datasets_dir + '/mcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
-    # eval_all_gcp(datasets_dir=datasets_dir + '/gcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
+    eval_all_misp(datasets_dir=datasets_dir + '/misp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
+    eval_all_mcp(datasets_dir=datasets_dir + '/mcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
+    eval_all_gcp(datasets_dir=datasets_dir + '/gcp', amfd_results_dir=amfd_results_dir, thread_num=thread_num)
 
 
 
