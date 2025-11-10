@@ -90,6 +90,20 @@ def eval_gcp(instance, step_scale=10, num_rep=100, device='cuda:0', min_step=0):
 
     return sols, vals, etas, zetas
 
+def eval_bqp(instance, step_scale=10, num_rep=100, device='cuda:0', min_step=0):
+
+    graph = torch.from_numpy(rf.BQP().read_file(instance)).float()
+    num_nodes = graph.shape[0]
+
+    sample = gn.BQP(graph, device=device)
+    shapes = [torch.Size([num_nodes])]
+
+    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=None)
+
+    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=num_rep, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+
+    return sols, vals, etas, zetas
+
 
 def make_table(vals, etas, zetas):
     etas = etas.cpu().numpy()
@@ -136,3 +150,8 @@ if __name__ == '__main__':
     sols, vals, etas, zetas = eval_gcp(instance, step_scale=10, num_rep=100, device='cuda:0', min_step=0)
     df = make_table(vals, etas, zetas)
     df.to_csv('gcp_sensitivity.csv')
+
+    instance = os.path.join(dataset_dir, 'orlib/bqp2500_01.txt')
+    sols, vals, etas, zetas = eval_bqp(instance, step_scale=10, num_rep=10, device='cuda:0', min_step=0)
+    df = make_table(vals, etas, zetas)
+    df.to_csv('bqp_sensitivity.csv')

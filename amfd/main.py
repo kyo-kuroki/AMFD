@@ -417,6 +417,52 @@ def eval_gcp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, de
     return results
 
 
+def eval_bqp(instance, k=4, genetic=True, step_scale=10, tuning_step_scale=1, device='cuda:0', min_step=0):
+
+    graph = torch.from_numpy(rf.BQP().read_file(instance)).float()
+    num_nodes = graph.shape[0]
+
+    # BQPの定式化を呼び出し
+    sample = gn.BQP(graph, device=device)
+    shapes = [torch.Size([num_nodes])]
+    # pre compile
+    op.pre_compile(sample.generator, shapes, device=device)
+
+    start_time = time.time()
+
+    squared_norm, diag_hessians = op.squared_norm_and_diag_hessians(sample.generator, shapes, device=device, generate_function=None)
+
+    sols, vals, etas, zetas = op.auto_grid_amfd(sample.generator, shapes, zeta_vals=[0, 1, 2, 5, 10, 20, 50], eta_vals=[0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2], t_st=0.35, t_en=0.001, num_rep=1, Nstep=max(min_step,tuning_step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device)
+    tuning_end_time = time.time()
+
+    topk_sols, topk_vals, topk_etas, topk_zetas = get_top_k(sols, vals, etas, zetas, k=k)
+
+    del sols, vals, etas, zetas # free memory
+
+    if genetic:
+        # 遺伝的アルゴリズムを使用して最適化
+        cross_etas, cross_zetas = crossover_parameters(topk_etas, topk_zetas)
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=cross_zetas, eta_vals=cross_etas, t_st=0.35, t_en=0.001, num_rep=10, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+
+    else:
+        tuned_sols, tuned_vals, tuned_etas, tuned_zetas = op.auto_amfd(sample.generator, shapes, zeta_vals=topk_zetas, eta_vals=topk_etas, t_st=0.35, t_en=0.001, num_rep=25, Nstep=max(min_step, step_scale*sum(math.prod(shape) for shape in shapes)), squared_norm=squared_norm, diag_hessians=diag_hessians, device=device, show_progress=True)
+
+    end_time = time.time()
+
+    # 結果の確認
+    best_sol, best_val, best_eta, best_zeta = get_top_k(tuned_sols, tuned_vals, tuned_etas, tuned_zetas, k=1)
+    if best_val[0].item() > topk_vals[0].item():
+        best_sol, best_val, best_eta, best_zeta = [topk_sols[0]], [topk_vals[0]], [topk_etas[0]], [topk_zetas[0]]
+        print("Tuning did not improve the solution, using the best from tuning phase.")
+
+
+    tuning_result = {'instance': Path(instance).stem, 'process':'tuning', 'step_scale':tuning_step_scale, 'time':round(tuning_end_time-start_time,5), 'value': round(topk_vals[0].item(),5), 'eta':round(topk_etas[0].item(),5), 'zeta':round(topk_zetas[0].item(),5), 'constraint satisfaction': True, 'constraint coeff':None}
+
+    tuned_result = {'instance': Path(instance).stem, 'process':'tuned', 'step_scale':step_scale, 'time':round(end_time-start_time,5), 'value': round(best_val[0].item(),5), 'eta':round(best_eta[0].item(),5), 'zeta':round(best_zeta[0].item(),5), 'constraint satisfaction': True, 'constraint coeff':None}
+
+    return tuning_result , tuned_result
+
+
 def eval_all_tsp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/tsp')):
     """
     Evaluate all TSP instances in the specified directory.
@@ -538,10 +584,10 @@ def eval_all_misp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10,
 
 def eval_all_mcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/mcp')):
     """
-    Evaluate all MISP instances in the specified directory.
+    Evaluate all MCP instances in the specified directory.
     
     Args:
-        dir (str): Directory containing MISP files.
+        dir (str): Directory containing MCP files.
         k (int): Number of top solutions to consider.
         genetic (bool): Whether to use genetic algorithm for optimization.
         step_scale (int): Step scale for optimization.
@@ -575,6 +621,46 @@ def eval_all_mcp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 
             target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
             os.makedirs(target_dir, exist_ok=True)
             df.to_csv(os.path.join(target_dir, f'mcp_results.csv'), index=False)
+
+def eval_all_bqp(k=4, genetic=True, tuning_step_scale=2, step_scales=[1, 2, 10, 20], device='cuda:0', seed=0, dir=os.path.join(parent_dir, 'datasets/orlib')):
+    """
+    Evaluate all BQP instances in the specified directory.
+    
+    Args:
+        dir (str): Directory containing BQP files.
+        k (int): Number of top solutions to consider.
+        genetic (bool): Whether to use genetic algorithm for optimization.
+        step_scale (int): Step scale for optimization.
+        tuning_step_scale (int): Step scale for tuning phase.
+        device (str): Device to run the evaluation on.
+    """
+
+    # ディレクトリ内の.mcpファイルをすべて取得
+    files = [f for f in os.listdir(dir) if f.endswith('.bqp')]
+
+    results = []
+    for file in sorted(files):
+        instance = os.path.join(dir, file)
+        for step_scale in step_scales:
+            print(f"Evaluating {file} ...")
+            torch.manual_seed(seed)
+            # 評価実行
+            tuning_result, tuned_result = eval_bqp(
+                instance=instance,
+                k=k,
+                genetic=genetic,
+                step_scale=step_scale,
+                tuning_step_scale=tuning_step_scale,
+                device=device
+            )
+            results += [tuning_result, tuned_result]
+            print("Tuning Result:", tuning_result)
+            print("Tuned Result:", tuned_result)
+            print("-" * 60)
+            df = pd.DataFrame(results)
+            target_dir = os.path.join(os.path.dirname(__file__), f'results_k{k}')
+            os.makedirs(target_dir, exist_ok=True)
+            df.to_csv(os.path.join(target_dir, f'bqp_results.csv'), index=False)
 
 
 
@@ -681,6 +767,15 @@ if __name__ == "__main__":
     )   
 
     eval_all_gcp(
+        k=args.k,
+        genetic=args.genetic,
+        tuning_step_scale=args.tuning_step_scale,
+        step_scales=args.step_scales,
+        device=args.device,
+        seed=args.seed
+    )
+
+    eval_all_bqp(
         k=args.k,
         genetic=args.genetic,
         tuning_step_scale=args.tuning_step_scale,
