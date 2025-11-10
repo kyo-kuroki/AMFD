@@ -569,3 +569,23 @@ class MCP():
     
 
 
+# MCP: maximum cut problem
+class BQP():
+    def __init__(self, graph, device='cuda'):
+        self.device = device
+        self.graph = graph.to(device)  # [N, N] symmetric adjacency matrix
+        self.num_node = self.graph.shape[0]
+
+    def generator(self, x: torch.Tensor):
+        """
+        QUBO for Max-Cut problem using binary vector x ∈ {0,1}^N.
+
+        Parameters:
+            graph: [N, N] symmetric adjacency matrix (edge weights)
+            x: [N] binary tensor, x[i] = 0 or 1 (group assignment)
+
+        Returns:
+            Negative cut-cost (since typical optimizers minimize): -MaxCut
+        """
+
+        return ((x @ (self.graph)) * (x)).sum()  

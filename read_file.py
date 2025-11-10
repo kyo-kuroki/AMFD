@@ -265,3 +265,44 @@ class GCP:
                     self.Eij[j][i] = 1
 
         return self.Eij
+
+class BQP:
+    def __init__(self):
+        self.node_num = 0
+        self.edge_num = 0
+        self.spin_num = 0
+        self.Eij = None
+
+    def read_file(self, file_path: str):
+        """
+        ファイルを読み込んで Max-Cut 用の隣接行列 Eij を構築する。
+        エッジ (i, j) は対称化の際に 1/2 スケールされる。
+
+        Args:
+            file_path (str): 入力テキストファイルのパス
+        Returns:
+            np.ndarray: 対称な隣接行列 Eij
+        """
+        with open(file_path, "r") as f:
+            header = f.readline().strip().split()
+            if len(header) < 2:
+                raise ValueError(f"Invalid header line in {file_path}: {header}")
+            self.node_num = int(header[0])
+            self.edge_num = int(header[1])
+            self.spin_num = self.node_num
+
+            self.Eij = np.zeros((self.node_num, self.node_num), dtype=float)
+
+            for line in f:
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) != 3:
+                    continue
+                i, j, w = map(int, parts)
+                # if i != j:
+                #     w = w / 1.0  # 対称行列にするとき重みを半分にする
+                self.Eij[i - 1, j - 1] = -w
+                self.Eij[j - 1, i - 1] = -w
+
+        return self.Eij
