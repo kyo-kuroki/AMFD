@@ -29,24 +29,6 @@ def callback(time_limit=None, target_obj=None, time_points=None, obj_log=None):
                 model.terminate()
                 return
 
-            # 指定時刻での記録
-            # if obj_log is not None and where == gp.GRB.Callback.MIPSOL:
-            #     for t in time_points:
-            #         if t not in recorded and runtime >= t:
-            #             try:
-            #                 # obj = model.cbGet(gp.GRB.Callback.MIP_OBJBST)
-            #                 obj = model.cbGet(gp.GRB.Callback.MIPSOL_OBJ)
-                            
-            #                 if obj != float('inf'):
-            #                     # 解（変数名→値）の辞書を取得
-            #                     # solution = {v.VarName: model.cbGetSolution(v) for v in model.getVars()}
-            #                     vars = model.getVars()
-            #                     solution = [model.cbGetSolution(v) for v in vars]
-            #                     obj_log.append((t, obj, solution))
-            #                     recorded.add(t)
-            #                     print(f"[{runtime:.2f}s] {t:.1f} 秒で目的関数: {obj}")
-            #             except gp.GurobiError as e:
-            #                  print(f"[{runtime:.2f}s] 解の取得エラー: {e}")
 
             if obj_log is not None and where == gp.GRB.Callback.MIPSOL:
                 try:
@@ -157,24 +139,6 @@ class QAP:
             for j in range(N):
                 x[i, j] = self.model.addVar(vtype=GRB.BINARY, name=f"x[{i},{j}]")
         # 目的関数の定義
-
-        # Q = QuadExpr()
-        # terms = []
-        # vars1 = []
-        # vars2 = []
-
-        # for i in tqdm.tqdm(range(N)):
-        #     for j in range(N):
-        #         fij = self.Fij[i, j]
-        #         for k in range(N):
-        #             for l in range(N):
-        #                 coef = fij * self.Dij[k, l]
-        #                 terms.append(coef)
-        #                 vars1.append(x[i, k])
-        #                 vars2.append(x[j, l])
-
-        # Q.addTerms(terms, vars1, vars2)
-        # self.model.setObjective(Q, GRB.MINIMIZE)
 
         F = self.Fij  # shape: (N, N)
         D = self.Dij  # shape: (N, N)

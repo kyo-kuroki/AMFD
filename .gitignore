@@ -1,0 +1,14 @@
+__pycache__/
+**/__pycache__/
+
+# Generated results
+aggregation/*.csv
+aggregation/plots/
+amfd/results_k5/
+gurobi/results/
+
+# Local datasets (keep the helper script only)
+datasets/*
+!datasets/orlib/
+datasets/orlib/*
+!datasets/orlib/split.py

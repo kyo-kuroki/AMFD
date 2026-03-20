@@ -88,7 +88,7 @@ def eval_qap(instance, time_limit=60, target_obj=None, time_points=None, thread_
 
     # QUBO solver
     sample = gn.QAP(torch.from_numpy(flows).float(), torch.from_numpy(dists).float(), coeff1=1, coeff2=1, device=device)
-    qubo, meta = md.get_qubo(sample.generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device=device)#, build_qubo=sample.build_qubo)
+    qubo, meta = md.get_qubo(sample.generator, {'x': torch.Size([dists.shape[0], dists.shape[0]])}, device=device)
     best_sol, best_obj, runtime, obj_log = go.QUBO(qubo['Q'], qubo['h'], qubo['const']).gurobi_optimize_QUBO(time_limit=time_limit, time_points=time_points, thread_num=thread_num, target_obj=target_obj, obj_log=[])
     for t, obj, sol in obj_log:
         sol = md.restore_variables(torch.tensor(sol),meta['index_map'])
