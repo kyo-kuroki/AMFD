@@ -1,7 +1,7 @@
 
 ---
 
-# AMFD for QUBO
+# Annealed Mean Field Descent (AMFD) for QUBO
 
 ## Overview
 
